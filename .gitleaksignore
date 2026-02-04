@@ -212,3 +212,6 @@ ff93e6e56d8ac8c049aa52323269adfe10ce430a:scripts/deployment/globals_polygon_main
 45c198ebfd33d3b5b643814d01177df299668f2b:scripts/deployment/globals_polygon_mainnet_test.json:generic-api-key:41
 45c198ebfd33d3b5b643814d01177df299668f2b:scripts/deployment/globals_polygon_mainnet.json:generic-api-key:41
 45c198ebfd33d3b5b643814d01177df299668f2b:scripts/deployment/globals_polygon_mainnet.json:generic-api-key:42
+831e04be8acedb0e67d0a315bfa8f6a8cf237ae4:scripts/deployment/globals_arbitrum_one.json:generic-api-key:30
+831e04be8acedb0e67d0a315bfa8f6a8cf237ae4:scripts/deployment/globals_celo_mainnet.json:generic-api-key:30
+  
