@@ -18,7 +18,8 @@ chainId=$(jq -r '.chainId' $globals)
 networkURL=$(jq -r '.networkURL' $globals)
 
 mechMarketplaceProxyAddress=$(jq -r ".mechMarketplaceProxyAddress" $globals)
-balanceTrackerFixedPriceTokenUSDCAddress=$(jq -r ".balanceTrackerFixedPriceTokenUSDCAddress" $globals)
+mechFactoryNvmSubscriptionNativeAddress=$(jq -r ".mechFactoryNvmSubscriptionNativeAddress" $globals)
+mechFactoryNvmSubscriptionTokenUSDCAddress=$(jq -r ".mechFactoryNvmSubscriptionTokenUSDCAddress" $globals)
 
 # Check for Alchemy keys on ETH, Polygon mainnets and testnets
 if [ $chainId == 1 ]; then
@@ -60,10 +61,10 @@ fi
 # Cast command
 echo "${green}Casting from: $deployer${reset}"
 echo "RPC: $networkURL"
-echo "${green}Set balance trackers in MechMarketplaceProxy${reset}"
+echo "${green}Set factories in MechMarketplaceProxy${reset}"
 
 castSendHeader="cast send --rpc-url $networkURL$API_KEY $walletArgs"
-castArgs="$mechMarketplaceProxyAddress setPaymentTypeBalanceTrackers(bytes32[],address[]) [0x6406bb5f31a732f898e1ce9fdd988a80a808d36ab5d9a4a4805a8be8d197d5e3] [$balanceTrackerFixedPriceTokenUSDCAddress]"
+castArgs="$mechMarketplaceProxyAddress setMechFactoryStatuses(address[],bool[]) [$mechFactoryNvmSubscriptionNativeAddress,$mechFactoryNvmSubscriptionTokenUSDCAddress] [true,true]"
 echo $castArgs
 castCmd="$castSendHeader $castArgs"
 result=$($castCmd)

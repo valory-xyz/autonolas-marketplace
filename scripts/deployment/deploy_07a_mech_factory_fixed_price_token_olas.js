@@ -60,7 +60,7 @@ async function main() {
     await new Promise(r => setTimeout(r, 30000));
 
     // Writing updated parameters back to the JSON file
-    parsedData.mechFactoryFixedPriceTokenAddress = mechFactoryFixedPriceToken.address;
+    parsedData.mechFactoryFixedPriceTokenOLASAddress = mechFactoryFixedPriceToken.address;
     fs.writeFileSync(globalsFile, JSON.stringify(parsedData));
 
     // Contract verification

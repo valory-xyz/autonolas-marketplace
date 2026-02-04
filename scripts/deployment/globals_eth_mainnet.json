@@ -10,7 +10,6 @@
   "olasAddress": "0x0001A500A6B18995B03f44bb040A5fFc28E45CB0",
   "timelockAddress": "0x3C1fF68f5aa342D296d4DEe4Bb1cACCA912D95fE",
   "serviceRegistryAddress": "0x48b6af7B12C71f09e2fC8aF4855De4Ff54e775cA",
-  "drainerAddress": "",
   "burnerAddress": "0x51eb65012ca5cEB07320c497F4151aC207FEa4E0",
   "wrappedNativeTokenAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   "usdcAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
