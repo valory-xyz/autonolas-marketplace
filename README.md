@@ -109,6 +109,11 @@ flowchart LR
     MechMarketplace -- checkAndRecordDeliveryRates --> BalanceTracker
     MechMarketplace -- finalizeDeliveryRates --> BalanceTracker
     MechMarketplace -- adjustMechRequesterBalances --> BalanceTracker
+    BalanceTracker -- drain fees (native, OLAS, USDC) --> BuyBackBurner
+    Account -- deposit --> BalanceTracker
+    BuyBackBurner -- swap non-OLAS for OLAS --> DEX -- OLAS --> BuyBackBurner
+    BuyBackBurner -- transfer OLAS --> Burner
+    BuyBackBurner -- transfer non-OLAS --> Treasury
 ```
 
 ## Acknowledgements
