@@ -114,6 +114,8 @@ flowchart LR
     BuyBackBurner -- swap non-OLAS for OLAS --> DEX -- OLAS --> BuyBackBurner
     BuyBackBurner -- transfer OLAS --> Burner
     BuyBackBurner -- transfer non-OLAS --> Treasury
+    Mech -- processPayment --> BalanceTracker
+    BalanceTracker -- transfer payment (native, OLAS, USDC) --> Mech
 ```
 
 ## Acknowledgements
