@@ -6,6 +6,37 @@ This repository contains the Mech Marketplace set of contracts registering mechs
 delivery via the means of the Marketplace. The core workflow of the Marketplace, including the roles and interactions of key
 participants, as well as an overview of the smart contracts, can be found [here](https://github.com/valory-xyz/autonolas-marketplace/tree/main/docs/MechMarketplaceDescriptionAndContractsOverviewRepo.pdf).
 
+## Architecture diagram
+
+```mermaid
+flowchart LR
+    DAO -- changeMarketplaceParams --> MechMarketplace
+    DAO -- setMechFactoryStatuses --> MechMarketplace
+    DAO -- setPaymentTypeBalanceTrackers --> MechMarketplace
+    DAO -- setMechMarketplaceStatuses --> Karma
+    Account -- create --> MechMarketplace
+    Account -- request --> MechMarketplace
+    Account -- requestBatch --> MechMarketplace
+    MechMarketplace -- create --> MechFactory
+    MechFactory -- new --> Mech
+    MechMarketplace -- requestFromMarketplace --> Mech
+    MechMarketplace -- changeRequesterMechKarma --> Karma
+    MechMarketplace -- changeMechKarma --> Karma
+    MechService -- deliverToMarketplace (priority or delivery mech) --> Mech
+    MechService -- deliverMarketplaceWithSignatures --> Mech
+    Mech -- deliverMarketplace --> MechMarketplace
+    Mech -- deliverMarketplaceWithSignatures --> MechMarketplace
+    MechMarketplace -- checkAndRecordDeliveryRates --> BalanceTracker
+    MechMarketplace -- finalizeDeliveryRates --> BalanceTracker
+    MechMarketplace -- adjustMechRequesterBalances --> BalanceTracker
+    BalanceTracker -- drain fees (native, OLAS, USDC) --> BuyBackBurner
+    Account -- deposit --> BalanceTracker
+    BuyBackBurner -- swap non-OLAS for OLAS --> DEX -- OLAS --> BuyBackBurner
+    BuyBackBurner -- transfer OLAS --> Burner
+    BuyBackBurner -- transfer non-OLAS --> Treasury
+    Mech -- processPayment --> BalanceTracker
+    BalanceTracker -- transfer payment (native, OLAS, USDC) --> Mech
+```
 
 ## Development
 
@@ -85,38 +116,6 @@ The older list of contract addresses for different chains and their full contrac
 ### Audits
 - The audit is provided as development matures. The latest audit report can be found here: [audits](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits).
 
-
-## Architecture diagram
-
-```mermaid
-flowchart LR
-    DAO -- changeMarketplaceParams --> MechMarketplace
-    DAO -- setMechFactoryStatuses --> MechMarketplace
-    DAO -- setPaymentTypeBalanceTrackers --> MechMarketplace
-    DAO -- setMechMarketplaceStatuses --> Karma
-    Account -- create --> MechMarketplace
-    Account -- request --> MechMarketplace
-    Account -- requestBatch --> MechMarketplace
-    MechMarketplace -- create --> MechFactory
-    MechFactory -- new --> Mech
-    MechMarketplace -- requestFromMarketplace --> Mech
-    MechMarketplace -- changeRequesterMechKarma --> Karma
-    MechMarketplace -- changeMechKarma --> Karma
-    MechService -- deliverToMarketplace (priority or delivery mech) --> Mech
-    MechService -- deliverMarketplaceWithSignatures --> Mech
-    Mech -- deliverMarketplace --> MechMarketplace
-    Mech -- deliverMarketplaceWithSignatures --> MechMarketplace
-    MechMarketplace -- checkAndRecordDeliveryRates --> BalanceTracker
-    MechMarketplace -- finalizeDeliveryRates --> BalanceTracker
-    MechMarketplace -- adjustMechRequesterBalances --> BalanceTracker
-    BalanceTracker -- drain fees (native, OLAS, USDC) --> BuyBackBurner
-    Account -- deposit --> BalanceTracker
-    BuyBackBurner -- swap non-OLAS for OLAS --> DEX -- OLAS --> BuyBackBurner
-    BuyBackBurner -- transfer OLAS --> Burner
-    BuyBackBurner -- transfer non-OLAS --> Treasury
-    Mech -- processPayment --> BalanceTracker
-    BalanceTracker -- transfer payment (native, OLAS, USDC) --> Mech
-```
 
 ## Acknowledgements
 The registry mech contracts were inspired and based on the following sources:
