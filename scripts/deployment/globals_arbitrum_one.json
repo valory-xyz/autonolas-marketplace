@@ -1,6 +1,6 @@
 {
   "contractVerification": true,
-  "useLedger": false,
+  "useLedger": true,
   "derivationPath": "m/44'/60'/2'/0/0",
   "providerName": "arbitrumOne",
   "chainId": "42161",
