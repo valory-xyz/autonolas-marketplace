@@ -14,7 +14,7 @@ async function main() {
     const gasPriceInGwei = parsedData.gasPriceInGwei;
     const mechMarketplaceProxyAddress = parsedData.mechMarketplaceProxyAddress;
     const balanceTrackerFixedPriceNativeAddress = parsedData.balanceTrackerFixedPriceNativeAddress;
-    const balanceTrackerFixedPriceTokenAddress = parsedData.balanceTrackerFixedPriceTokenAddress;
+    const balanceTrackerFixedPriceTokenOLASAddress = parsedData.balanceTrackerFixedPriceTokenOLASAddress;
     const balanceTrackerNvmSubscriptionNativeAddress = parsedData.balanceTrackerNvmSubscriptionNativeAddress;
 
     let networkURL = parsedData.networkURL;
@@ -52,8 +52,8 @@ async function main() {
     console.log("You are signing the following transaction: MechMarketplaceProxy.connect(EOA).setMechFactoryStatuses()");
     const gasPrice = ethers.utils.parseUnits(gasPriceInGwei, "gwei");
     const result = await mechMarketplace.connect(EOA).setPaymentTypeBalanceTrackers(
-        ["0xba699a34be8fe0e7725e93dcbce1701b0211a8ca61330aaeb8a05bf2ec7abed1", "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9", "0x803dd08fe79d91027fc9024e254a0942372b92f3ccabc1bd19f4a5c2b251c316"],
-        [balanceTrackerFixedPriceNativeAddress, balanceTrackerFixedPriceTokenAddress, balanceTrackerNvmSubscriptionNativeAddress],
+        ["0xba699a34be8fe0e7725e93dcbce1701b0211a8ca61330aaeb8a05bf2ec7abed1", "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9", ""],
+        [balanceTrackerFixedPriceNativeAddress, balanceTrackerFixedPriceTokenOLASAddress, balanceTrackerNvmSubscriptionNativeAddress],
         { gasPrice }
     );
 

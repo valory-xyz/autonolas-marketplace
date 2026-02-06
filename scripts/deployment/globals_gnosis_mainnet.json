@@ -26,10 +26,11 @@
   "balanceTrackerNvmSubscriptionNativeAddress": "0x7D686bD1fD3CFF6E45a40165154D61043af7D67c",
   "mechFactoryFixedPriceNativeAddress": "0x8b299c20F87e3fcBfF0e1B86dC0acC06AB6993EF",
   "balanceTrackerFixedPriceNativeAddress": "0x21cE6799A22A3Da84B7c44a814a9c79ab1d2A50D",
-  "mechFactoryFixedPriceTokenAddress": "0x31ffDC795FDF36696B8eDF7583A3D115995a45FA",
-  "balanceTrackerFixedPriceTokenAddress": "0x53Bd432516707a5212A70216284a99A563aAC1D1",
+  "mechFactoryFixedPriceTokenOLASAddress": "0x31ffDC795FDF36696B8eDF7583A3D115995a45FA",
+  "balanceTrackerFixedPriceTokenOLASAddress": "0x53Bd432516707a5212A70216284a99A563aAC1D1",
   "didRegistryAddress": "0xCB0A331cB1F57E01FF0FA2d664f2F100081cbc3b",
   "transferNFTConditionAddress": "0x659fCA7436936e9fe8383831b65B8B442eFc8Ea8",
   "escrowPaymentConditionAddress": "0x31B2D187d674C9ACBD2b25f6EDce3d2Db2B7f446",
-  "subscriptionProviderAddress": "0x4a2f40E14309c20c0C3803c3CcCd5E9B5F2D4eCA"
+  "subscriptionProviderAddress": "0x4a2f40E14309c20c0C3803c3CcCd5E9B5F2D4eCA",
+  "usdcAddress": "0xDDAfbb505ad214D7b80b1f830fcCc89B60fb7A83"
 }

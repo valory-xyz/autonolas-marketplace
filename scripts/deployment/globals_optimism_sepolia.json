@@ -38,6 +38,6 @@
   "mechMarketplaceProxyAddress": "0x00c3B912FF54B2a7E37D495a496f025D51fb8058",
   "mechFactoryFixedPriceNativeAddress": "0xa2AA89938805836077aB0724f335142da7A27085",
   "balanceTrackerFixedPriceNativeAddress": "0x63b0f322837a7160B7E3d95C60aAaeB4EF1aECcb",
-  "mechFactoryFixedPriceTokenAddress": "0x164192772C363DD391d1fb3D396cd1d9FB10def1",
-  "balanceTrackerFixedPriceTokenAddress": "0x1E11f1224e32Fe0f65FF7D13aD4b053B83bD09FA"
+  "mechFactoryFixedPriceTokenOLASAddress": "0x164192772C363DD391d1fb3D396cd1d9FB10def1",
+  "balanceTrackerFixedPriceTokenOLASAddress": "0x1E11f1224e32Fe0f65FF7D13aD4b053B83bD09FA"
 }

@@ -83,10 +83,10 @@ echo "${green}Deployment of: $contractArgs${reset}"
 # Deploy the contract and capture the address
 execCmd="forge create --broadcast --rpc-url $networkURL$API_KEY $walletArgs $contractArgs"
 deploymentOutput=$($execCmd)
-mechFactoryFixedPriceTokenAddress=$(echo "$deploymentOutput" | grep 'Deployed to:' | awk '{print $3}')
+mechFactoryFixedPriceTokenOLASAddress=$(echo "$deploymentOutput" | grep 'Deployed to:' | awk '{print $3}')
 
 # Get output length
-outputLength=${#mechFactoryFixedPriceTokenAddress}
+outputLength=${#mechFactoryFixedPriceTokenOLASAddress}
 
 # Check for the deployed address
 if [ $outputLength != 42 ]; then
@@ -95,11 +95,11 @@ if [ $outputLength != 42 ]; then
 fi
 
 # Write new deployed contract back into JSON
-echo "$(jq '. += {"mechFactoryFixedPriceTokenAddress":"'$mechFactoryFixedPriceTokenAddress'"}' $globals)" > $globals
+echo "$(jq '. += {"mechFactoryFixedPriceTokenOLASAddress":"'$mechFactoryFixedPriceTokenOLASAddress'"}' $globals)" > $globals
 
 # Verify contract
 if [ "$contractVerification" == "true" ]; then
-  contractParams="$mechFactoryFixedPriceTokenAddress $contractPath --constructor-args $(cast abi-encode "constructor(address)" $constructorArgs)"
+  contractParams="$mechFactoryFixedPriceTokenOLASAddress $contractPath --constructor-args $(cast abi-encode "constructor(address)" $constructorArgs)"
   echo "Verification contract params: $contractParams"
 
   echo "${green}Verifying contract on Etherscan...${reset}"
@@ -112,4 +112,4 @@ if [ "$contractVerification" == "true" ]; then
   fi
 fi
 
-echo "${green}$contractName deployed at: $mechFactoryFixedPriceTokenAddress${reset}"
+echo "${green}$contractName deployed at: $mechFactoryFixedPriceTokenOLASAddress${reset}"

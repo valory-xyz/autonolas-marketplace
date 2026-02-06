@@ -14,7 +14,7 @@ async function main() {
     const gasPriceInGwei = parsedData.gasPriceInGwei;
     const mechMarketplaceProxyAddress = parsedData.mechMarketplaceProxyAddress;
     const mechFactoryFixedPriceNativeAddress = parsedData.mechFactoryFixedPriceNativeAddress;
-    const mechFactoryFixedPriceTokenAddress = parsedData.mechFactoryFixedPriceTokenAddress;
+    const mechFactoryFixedPriceTokenOLASAddress = parsedData.mechFactoryFixedPriceTokenOLASAddress;
     const mechFactoryNvmSubscriptionNativeAddress = parsedData.mechFactoryNvmSubscriptionNativeAddress;
 
     let networkURL = parsedData.networkURL;
@@ -52,7 +52,7 @@ async function main() {
     console.log("You are signing the following transaction: MechMarketplaceProxy.connect(EOA).setMechFactoryStatuses()");
     const gasPrice = ethers.utils.parseUnits(gasPriceInGwei, "gwei");
     const result = await mechMarketplace.connect(EOA).setMechFactoryStatuses(
-        [mechFactoryFixedPriceNativeAddress, mechFactoryFixedPriceTokenAddress, mechFactoryNvmSubscriptionNativeAddress],
+        [mechFactoryFixedPriceNativeAddress, mechFactoryFixedPriceTokenOLASAddress, mechFactoryNvmSubscriptionNativeAddress],
         [true, true, true],
         { gasPrice }
     );

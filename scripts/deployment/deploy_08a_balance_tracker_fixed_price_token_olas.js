@@ -63,7 +63,7 @@ async function main() {
     await new Promise(r => setTimeout(r, 30000));
 
     // Writing updated parameters back to the JSON file
-    parsedData.balanceTrackerFixedPriceTokenAddress = balanceTrackerFixedPriceToken.address;
+    parsedData.balanceTrackerFixedPriceTokenOLASAddress = balanceTrackerFixedPriceToken.address;
     fs.writeFileSync(globalsFile, JSON.stringify(parsedData));
 
     // Contract verification

@@ -18,21 +18,32 @@ chainId=$(jq -r '.chainId' $globals)
 networkURL=$(jq -r '.networkURL' $globals)
 
 mechMarketplaceProxyAddress=$(jq -r ".mechMarketplaceProxyAddress" $globals)
-mechFactoryFixedPriceNativeAddress=$(jq -r ".mechFactoryFixedPriceNativeAddress" $globals)
-mechFactoryFixedPriceTokenAddress=$(jq -r ".mechFactoryFixedPriceTokenAddress" $globals)
-mechFactoryNvmSubscriptionTokenUSDCAddress=$(jq -r ".mechFactoryNvmSubscriptionTokenUSDCAddress" $globals)
+balanceTrackerNvmSubscriptionNativeAddress=$(jq -r ".balanceTrackerNvmSubscriptionNativeAddress" $globals)
+balanceTrackerNvmSubscriptionTokenUSDCAddress=$(jq -r ".balanceTrackerNvmSubscriptionTokenUSDCAddress" $globals)
 
-# Check for Polygon keys only since on other networks those are not needed
-if [ $chainId == 137 ]; then
+# Check for Alchemy keys on ETH, Polygon mainnets and testnets
+if [ $chainId == 1 ]; then
+  API_KEY=$ALCHEMY_API_KEY_MAINNET
+  if [ "$API_KEY" == "" ]; then
+      echo "${red}!!! Set ALCHEMY_API_KEY_MAINNET env variable${reset}"
+      exit 0
+  fi
+elif [ $chainId == 11155111 ]; then
+    API_KEY=$ALCHEMY_API_KEY_SEPOLIA
+    if [ "$API_KEY" == "" ]; then
+        echo "${red}!!! Set ALCHEMY_API_KEY_SEPOLIA env variable${reset}"
+        exit 0
+    fi
+elif [ $chainId == 137 ]; then
   API_KEY=$ALCHEMY_API_KEY_MATIC
   if [ "$API_KEY" == "" ]; then
-      echo "set ALCHEMY_API_KEY_MATIC env variable"
+      echo "${red}!!! Set ALCHEMY_API_KEY_MATIC env variable${reset}"
       exit 0
   fi
 elif [ $chainId == 80002 ]; then
     API_KEY=$ALCHEMY_API_KEY_AMOY
     if [ "$API_KEY" == "" ]; then
-        echo "set ALCHEMY_API_KEY_AMOY env variable"
+        echo "${red}!!! Set ALCHEMY_API_KEY_AMOY env variable${reset}"
         exit 0
     fi
 fi
@@ -50,10 +61,10 @@ fi
 # Cast command
 echo "${green}Casting from: $deployer${reset}"
 echo "RPC: $networkURL"
-echo "${green}Set factories in MechMarketplaceProxy${reset}"
+echo "${green}Set balance trackers in MechMarketplaceProxy${reset}"
 
 castSendHeader="cast send --rpc-url $networkURL$API_KEY $walletArgs"
-castArgs="$mechMarketplaceProxyAddress setMechFactoryStatuses(address[],bool[]) [$mechFactoryFixedPriceNativeAddress,$mechFactoryFixedPriceTokenAddress,$mechFactoryNvmSubscriptionTokenUSDCAddress] [true,true,true]"
+castArgs="$mechMarketplaceProxyAddress setPaymentTypeBalanceTrackers(bytes32[],address[]) [0x803dd08fe79d91027fc9024e254a0942372b92f3ccabc1bd19f4a5c2b251c316,0x0d6fd99afa9c4c580fab5e341922c2a5c4b61d880da60506193d7bf88944dd14] [$balanceTrackerNvmSubscriptionNativeAddress,$balanceTrackerNvmSubscriptionTokenUSDCAddress]"
 echo $castArgs
 castCmd="$castSendHeader $castArgs"
 result=$($castCmd)

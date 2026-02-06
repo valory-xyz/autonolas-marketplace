@@ -19,20 +19,32 @@ networkURL=$(jq -r '.networkURL' $globals)
 
 mechMarketplaceProxyAddress=$(jq -r ".mechMarketplaceProxyAddress" $globals)
 balanceTrackerFixedPriceNativeAddress=$(jq -r ".balanceTrackerFixedPriceNativeAddress" $globals)
-balanceTrackerFixedPriceTokenAddress=$(jq -r ".balanceTrackerFixedPriceTokenAddress" $globals)
-balanceTrackerNvmSubscriptionTokenUSDCAddress=$(jq -r ".balanceTrackerNvmSubscriptionTokenUSDCAddress" $globals)
+balanceTrackerFixedPriceTokenOLASAddress=$(jq -r ".balanceTrackerFixedPriceTokenOLASAddress" $globals)
+balanceTrackerFixedPriceTokenUSDCAddress=$(jq -r ".balanceTrackerFixedPriceTokenUSDCAddress" $globals)
 
-# Check for Polygon keys only since on other networks those are not needed
-if [ $chainId == 137 ]; then
+# Check for Alchemy keys on ETH, Polygon mainnets and testnets
+if [ $chainId == 1 ]; then
+  API_KEY=$ALCHEMY_API_KEY_MAINNET
+  if [ "$API_KEY" == "" ]; then
+      echo "${red}!!! Set ALCHEMY_API_KEY_MAINNET env variable${reset}"
+      exit 0
+  fi
+elif [ $chainId == 11155111 ]; then
+    API_KEY=$ALCHEMY_API_KEY_SEPOLIA
+    if [ "$API_KEY" == "" ]; then
+        echo "${red}!!! Set ALCHEMY_API_KEY_SEPOLIA env variable${reset}"
+        exit 0
+    fi
+elif [ $chainId == 137 ]; then
   API_KEY=$ALCHEMY_API_KEY_MATIC
   if [ "$API_KEY" == "" ]; then
-      echo "set ALCHEMY_API_KEY_MATIC env variable"
+      echo "${red}!!! Set ALCHEMY_API_KEY_MATIC env variable${reset}"
       exit 0
   fi
 elif [ $chainId == 80002 ]; then
     API_KEY=$ALCHEMY_API_KEY_AMOY
     if [ "$API_KEY" == "" ]; then
-        echo "set ALCHEMY_API_KEY_AMOY env variable"
+        echo "${red}!!! Set ALCHEMY_API_KEY_AMOY env variable${reset}"
         exit 0
     fi
 fi
@@ -53,7 +65,7 @@ echo "RPC: $networkURL"
 echo "${green}Set balance trackers in MechMarketplaceProxy${reset}"
 
 castSendHeader="cast send --rpc-url $networkURL$API_KEY $walletArgs"
-castArgs="$mechMarketplaceProxyAddress setPaymentTypeBalanceTrackers(bytes32[],address[]) [0xba699a34be8fe0e7725e93dcbce1701b0211a8ca61330aaeb8a05bf2ec7abed1,0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9,0x0d6fd99afa9c4c580fab5e341922c2a5c4b61d880da60506193d7bf88944dd14] [$balanceTrackerFixedPriceNativeAddress,$balanceTrackerFixedPriceTokenAddress,$balanceTrackerNvmSubscriptionTokenUSDCAddress]"
+castArgs="$mechMarketplaceProxyAddress setPaymentTypeBalanceTrackers(bytes32[],address[]) [0xba699a34be8fe0e7725e93dcbce1701b0211a8ca61330aaeb8a05bf2ec7abed1,0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9,0x6406bb5f31a732f898e1ce9fdd988a80a808d36ab5d9a4a4805a8be8d197d5e3] [$balanceTrackerFixedPriceNativeAddress,$balanceTrackerFixedPriceTokenOLASAddress,$balanceTrackerFixedPriceTokenUSDCAddress]"
 echo $castArgs
 castCmd="$castSendHeader $castArgs"
 result=$($castCmd)
