@@ -17,8 +17,11 @@ derivationPath=$(jq -r '.derivationPath' $globals)
 chainId=$(jq -r '.chainId' $globals)
 networkURL=$(jq -r '.networkURL' $globals)
 
-
-bridgeMediatorAddress=$(jq -r ".bridgeMediatorAddress" $globals)
+if [ $chainId == 1 ] || [ $chainId == 11155111 ]; then
+  bridgeMediatorAddress=$(jq -r ".timelockAddress" $globals)
+else
+  bridgeMediatorAddress=$(jq -r ".bridgeMediatorAddress" $globals)
+fi
 karmaProxyAddress=$(jq -r ".karmaProxyAddress" $globals)
 mechMarketplaceProxyAddress=$(jq -r ".mechMarketplaceProxyAddress" $globals)
 

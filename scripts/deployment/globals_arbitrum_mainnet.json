@@ -26,7 +26,7 @@
   "agentFactorySubscriptionAddress": "0xd8BCC126ff31d2582018715d5291A508530587b0",
   "olasAddress": "0x064F8B858C2A603e1b106a2039f5446D32dc81c1",
   "serviceRegistryAddress": "0xE3607b00E75f6405248323A9417ff6b39B244b50",
-  "drainerAddress": "",
+  "drainerAddress": "0xd2ff4Cf0927c3cFbF3BB27391044dBaf6f4ca7b9",
   "wrappedNativeTokenAddress": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
   "usdcAddress": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
   "fee": "0",

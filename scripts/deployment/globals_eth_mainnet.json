@@ -11,6 +11,7 @@
   "timelockAddress": "0x3C1fF68f5aa342D296d4DEe4Bb1cACCA912D95fE",
   "serviceRegistryAddress": "0x48b6af7B12C71f09e2fC8aF4855De4Ff54e775cA",
   "burnerAddress": "0x51eb65012ca5cEB07320c497F4151aC207FEa4E0",
+  "drainerAddress": "0xfAd04813BffD759a308A2BEaAcEf587720ba743F",
   "wrappedNativeTokenAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   "usdcAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
   "fee": "0",
