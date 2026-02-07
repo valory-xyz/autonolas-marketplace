@@ -7,6 +7,19 @@ const fs = require("fs");
 const verifyRepo = false;
 const verifySetup = true;
 
+// ===================== CSV CONFIG =====================
+const WRITE_OWNERSHIP_CSV = true;
+const OWNERSHIP_CSV_PATH = "scripts/audit_chains/ownable_owners.csv";
+
+// Autonolas deployer (for classification)
+const AUTONOLAS_DEPLOYER = "0xEB2A22b27C7Ad5eeE424Fd90b376c745E60f914E";
+
+// Minimal helper: normalize addresses (case-insensitive compare)
+const norm = (a) => (a ? ethers.utils.getAddress(a) : a);
+
+// Global accumulator for CSV rows (collected during setup checks)
+const ownershipRows = [];
+
 // Custom expect that is wrapped into try / catch block
 function customExpect(arg1, arg2, log) {
     try {
@@ -37,6 +50,73 @@ function customExpectContain(arg1, arg2, log) {
             console.log("\n");
         }
     }
+}
+
+// Write ownership CSV
+function writeOwnershipCsv(rows, outPath) {
+    const headers = [
+        "chainId",
+        "contractName",
+        "contractAddress",
+        "ownerAddress",
+        "ownerCategory",
+        "expectedDaoExecutor",
+        "ownershipChangeRequired",
+    ];
+
+    const escapeCsv = (v) => {
+        if (v === null || v === undefined) return "";
+        const s = String(v);
+        if (s.includes("\"") || s.includes(",") || s.includes("\n")) {
+            return `"${s.replace(/"/g, "\"\"")}"`;
+        }
+        return s;
+    };
+
+    const lines = [
+        headers.join(","),
+        ...rows.map((r) => headers.map((h) => escapeCsv(r[h])).join(",")),
+    ];
+
+    fs.writeFileSync(outPath, lines.join("\n"), "utf8");
+    console.log(`\n[CSV] Wrote ${rows.length} rows to ${outPath}\n`);
+}
+
+// Push a row into the ownership CSV accumulator
+function recordOwnershipRow(chainId, contractName, contractAddress, ownerInfo) {
+    if (!WRITE_OWNERSHIP_CSV || !ownerInfo) return;
+
+    ownershipRows.push({
+        chainId: String(chainId),
+        contractName: contractName,
+        contractAddress: norm(contractAddress),
+        ownerAddress: ownerInfo.owner,
+        ownerCategory: ownerInfo.ownerCategory,
+        expectedDaoExecutor: ownerInfo.expectedDaoExecutor,
+        ownershipChangeRequired: ownerInfo.ownershipChangeRequired,
+    });
+}
+
+// Check the contract owner
+async function checkOwner(chainId, contract, globalsInstance, log) {
+    const owner = norm(await contract.owner());
+    const expected = norm(globalsInstance["bridgeMediatorAddress"]);
+
+    customExpect(owner, expected, log + ", function: owner()");
+
+    const ownerCategory =
+        owner === norm(AUTONOLAS_DEPLOYER)
+            ? "autonolas_deployer"
+            : (owner === expected ? "dao_executor" : "other");
+
+    const ownershipChangeRequired = owner === expected ? "no" : "yes";
+
+    return {
+        owner,
+        expectedDaoExecutor: expected,
+        ownerCategory: ownerCategory,
+        ownershipChangeRequired: ownershipChangeRequired,
+    };
 }
 
 // Check the bytecode
@@ -100,9 +180,9 @@ async function checkKarmaProxy(chainId, provider, globalsInstance, configContrac
     const karmaProxy = await findContractInstance(provider, configContracts, contractName);
 
     log += ", address: " + karmaProxy.address;
-    // Check the owner
-    const owner = await karmaProxy.owner();
-    customExpect(owner, globalsInstance["bridgeMediatorAddress"], log + ", function: owner()");
+    // Check owner + record CSV
+    const ownerInfo = await checkOwner(chainId, karmaProxy, globalsInstance, log);
+    recordOwnershipRow(chainId, contractName, karmaProxy.address, ownerInfo);
 
     // Check the whitelisted marketplace
     const isMarketplaceWhitelisted = await karmaProxy.mapMechMarketplaces(globalsInstance["mechMarketplaceProxyAddress"]);
@@ -118,9 +198,9 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
     const mechMarketplaceProxy = await findContractInstance(provider, configContracts, contractName);
 
     log += ", address: " + mechMarketplaceProxy.address;
-    // Check the owner
-    const owner = await mechMarketplaceProxy.owner();
-    customExpect(owner, globalsInstance["bridgeMediatorAddress"], log + ", function: owner()");
+    // Check owner + record CSV
+    const ownerInfo = await checkOwner(chainId, mechMarketplaceProxy, globalsInstance, log);
+    recordOwnershipRow(chainId, contractName, mechMarketplaceProxy.address, ownerInfo);
 
     // Check service registry address
     const serviceRegistry = await mechMarketplaceProxy.serviceRegistry();
@@ -335,6 +415,11 @@ async function main() {
         }
     }
     // ################################# /VERIFY CONTRACTS SETUP #################################
+
+    // Write CSV once at the end of setup verification
+    if (WRITE_OWNERSHIP_CSV) {
+        writeOwnershipCsv(ownershipRows, OWNERSHIP_CSV_PATH);
+    }
 }
 
 main()
