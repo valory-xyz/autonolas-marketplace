@@ -1,5 +1,65 @@
 [
   {
+    "name": "mainnet",
+    "chainId": "1",
+    "contracts": [
+      {
+        "name": "Karma",
+        "artifact": "abis/0.8.28/Karma.json",
+        "address": "0xB01B4154047e51F01b22017079367341ea73d744"
+      },
+      {
+        "name": "KarmaProxy",
+        "artifact": "abis/0.8.28/KarmaProxy.json",
+        "address": "0xf0B1Fc3A3D412Ea73136925B831D6203De310650"
+      },
+      {
+        "name": "MechMarketplace",
+        "artifact": "abis/0.8.30/MechMarketplace.json",
+        "address": "0x6B149a00E40cC6C148992C6AADd232d958C35Fa3"
+      },
+      {
+        "name": "MechMarketplaceProxy",
+        "artifact": "abis/0.8.28/MechMarketplaceProxy.json",
+        "address": "0x3d6494CE09a9f40c0B5a92BdBD7c7A9b0e3912b1"
+      },
+      {
+        "name": "MechFactoryFixedPriceNative",
+        "artifact": "abis/0.8.28/MechFactoryFixedPriceNative.json",
+        "address": "0x3515a36AF270070635Fa3E957e006aaF6078e658"
+      },
+      {
+        "name": "MechFactoryFixedPriceToken",
+        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "address": "0xF95BfBBA428dfb454Cd59C9c2d309bd6452d12A8",
+        "token": "usdc"
+      },
+      {
+        "name": "MechFactoryFixedPriceToken",
+        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "address": "0xddF6c8521195AC613626aE7a8E7d645128bc26fD",
+        "token": "olas"
+      },
+      {
+        "name": "BalanceTrackerFixedPriceNative",
+        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceNative.json",
+        "address": "0x528befb0F8c6a988C9F42345DA6d053d66b3B9B6"
+      },
+      {
+        "name": "BalanceTrackerFixedPriceToken",
+        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
+        "address": "0x897aee2e6F3d37740D334C55Caea2e0caC82aa14",
+        "token": "usdc"
+      },
+      {
+        "name": "BalanceTrackerFixedPriceToken",
+        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
+        "address": "0x02b576cc1bB21A84Dd8b59013777C150ea64c482",
+        "token": "olas"
+      }
+    ]
+  },
+  {
     "name": "gnosis",
     "chainId": "100",
     "contracts": [
@@ -302,58 +362,62 @@
     ]
   },
   {
-    "name": "arbitrumOne",
+    "name": "arbitrum",
     "chainId": "42161",
     "contracts": [
       {
         "name": "Karma",
         "artifact": "abis/0.8.28/Karma.json",
-        "address": ""
+        "address": "0x4aba1Cf7a39a51D75cBa789f5f21cf4882162519"
       },
       {
         "name": "KarmaProxy",
         "artifact": "abis/0.8.28/KarmaProxy.json",
-        "address": ""
+        "address": "0x8Bc0a5c5B1612A16983B01ecd7ae130E728390CB"
       },
       {
         "name": "MechMarketplace",
-        "artifact": "abis/0.8.28/MechMarketplace.json",
-        "address": ""
+        "artifact": "abis/0.8.30/MechMarketplace.json",
+        "address": "0x46C0D07F55d4F9B5Eed2Fc9680B5953e5fd7b461"
       },
       {
         "name": "MechMarketplaceProxy",
         "artifact": "abis/0.8.28/MechMarketplaceProxy.json",
-        "address": ""
+        "address": "0xf76953444C35F1FcE2F6CA1b167173357d3F5C17"
       },
       {
         "name": "MechFactoryFixedPriceNative",
         "artifact": "abis/0.8.28/MechFactoryFixedPriceNative.json",
-        "address": ""
+        "address": "0x4Cd816ce806FF1003ee459158A093F02AbF042a8"
       },
       {
         "name": "MechFactoryFixedPriceToken",
         "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
-        "address": ""
+        "address": "0x694e62BDF7Ff510A4EE66662cf4866A961a31653",
+        "token": "usdc"
       },
       {
-        "name": "MechFactoryNvmSubscriptionNative",
-        "artifact": "abis/0.8.28/MechFactoryNvmSubscriptionNative.json",
-        "address": ""
+        "name": "MechFactoryFixedPriceToken",
+        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "address": "0x70A0D93fb0dB6EAab871AB0A3BE279DcA37a2bcf",
+        "token": "olas"
       },
       {
         "name": "BalanceTrackerFixedPriceNative",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceNative.json",
-        "address": ""
+        "address": "0x26Ea2dC7ce1b41d0AD0E0521535655d7a94b684c"
       },
       {
         "name": "BalanceTrackerFixedPriceToken",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
-        "address": ""
+        "address": "0xa987Fe40034AaD2EbB0E01B22DFc57f20C87F949",
+        "token": "usdc"
       },
       {
-        "name": "BalanceTrackerNvmSubscriptionNative",
-        "artifact": "abis/0.8.28/BalanceTrackerNvmSubscriptionNative.json",
-        "address": ""
+        "name": "BalanceTrackerFixedPriceToken",
+        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
+        "address": "0x5dfb0d37f2A28023CDBa46D2f015A90564Cf9586",
+        "token": "olas"
       }
     ]
   },
@@ -364,52 +428,56 @@
       {
         "name": "Karma",
         "artifact": "abis/0.8.28/Karma.json",
-        "address": ""
+        "address": "0x8Bb87107CDAdE4cD7f470DC90CD58Ba1595B1D64"
       },
       {
         "name": "KarmaProxy",
         "artifact": "abis/0.8.28/KarmaProxy.json",
-        "address": ""
+        "address": "0x02C26437B292D86c5F4F21bbCcE0771948274f84"
       },
       {
         "name": "MechMarketplace",
-        "artifact": "abis/0.8.28/MechMarketplace.json",
-        "address": ""
+        "artifact": "abis/0.8.30/MechMarketplace.json",
+        "address": "0x1a0bFCC27051BCcDDc444578f56A4F5920e0E083"
       },
       {
         "name": "MechMarketplaceProxy",
         "artifact": "abis/0.8.28/MechMarketplaceProxy.json",
-        "address": ""
+        "address": "0x17d96ba4532fe91809326092fE4D5606A7B7a0d8"
       },
       {
         "name": "MechFactoryFixedPriceNative",
         "artifact": "abis/0.8.28/MechFactoryFixedPriceNative.json",
-        "address": ""
+        "address": "0xDd1252c5a75be568B5E6e50bA542680b38dbd68f"
       },
       {
         "name": "MechFactoryFixedPriceToken",
         "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
-        "address": ""
+        "address": "0xE3e5Df46060370af5Fd37B2aA11e7dac3cCB4bd0",
+        "token": "usdc"
       },
       {
-        "name": "MechFactoryNvmSubscriptionNative",
-        "artifact": "abis/0.8.28/MechFactoryNvmSubscriptionNative.json",
-        "address": ""
+        "name": "MechFactoryFixedPriceToken",
+        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "address": "0xA123748Ce7609F507060F947b70298D0bde621E6",
+        "token": "olas"
       },
       {
         "name": "BalanceTrackerFixedPriceNative",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceNative.json",
-        "address": ""
+        "address": "0x93111f6C267068A5d7356114D61d0f09bFD53a54"
       },
       {
         "name": "BalanceTrackerFixedPriceToken",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
-        "address": ""
+        "address": "0xA749f605D93B3efcc207C54270d83C6E8fa70fF8",
+        "token": "usdc"
       },
       {
-        "name": "BalanceTrackerNvmSubscriptionNative",
-        "artifact": "abis/0.8.28/BalanceTrackerNvmSubscriptionNative.json",
-        "address": ""
+        "name": "BalanceTrackerFixedPriceToken",
+        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
+        "address": "0x3912381bAa2935a0fc03c173Df366A459DAc1F43",
+        "token": "olas"
       }
     ]
   }
