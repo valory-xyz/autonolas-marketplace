@@ -25,6 +25,7 @@
   "agentFactoryAddress": "0x87c511c8aE3fAF0063b3F3CF9C6ab96c4AA5C60c",
   "agentFactorySubscriptionAddress": "0x88DE734655184a09B70700aE4F72364d1ad23728",
   "olasAddress": "0xD80533CA29fF6F033a0b55732Ed792af9Fbb381E",
+  "bridgeMediatorAddress": "0xC14E191A64a7FB0e5790a8a0B9a58683dFFce04d",
   "serviceRegistryAddress": "0xE3607b00E75f6405248323A9417ff6b39B244b50",
   "drainerAddress": "0x11949cBC85d8793B360029E26b18ae759708e28b",
   "wrappedNativeTokenAddress": "0x471EcE3750Da237f93B8E339c536989b8978a438",

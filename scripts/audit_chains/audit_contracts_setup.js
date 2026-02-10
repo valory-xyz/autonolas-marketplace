@@ -100,7 +100,7 @@ function recordOwnershipRow(chainId, contractName, contractAddress, ownerInfo) {
 // Check the contract owner
 async function checkOwner(chainId, contract, globalsInstance, log) {
     const owner = norm(await contract.owner());
-    const expected = norm(globalsInstance["bridgeMediatorAddress"]);
+    const expected = chainId == 1 ? norm(globalsInstance["timelockAddress"]) : norm(globalsInstance["bridgeMediatorAddress"]);
 
     customExpect(owner, expected, log + ", function: owner()");
 
@@ -150,7 +150,7 @@ async function checkBytecode(provider, configContracts, contractName, log) {
 }
 
 // Find the contract name from the configuration data
-async function findContractInstance(provider, configContracts, contractName) {
+async function findContractInstance(provider, configContracts, contractName, tokenName) {
     // Get the contract number from the set of configuration contracts
     for (let i = 0; i < configContracts.length; i++) {
         if (configContracts[i]["name"] === contractName) {
@@ -161,6 +161,11 @@ async function findContractInstance(provider, configContracts, contractName) {
             if (contractName === "KarmaProxy" || contractName === "MechMarketplaceProxy") {
                 // Get previous ABI
                 contractFromJSON = fs.readFileSync(configContracts[i - 1]["artifact"], "utf8");
+            }
+
+            // Search for corresponding BalanceTrackerFixedPriceToken
+            if (contractName === "BalanceTrackerFixedPriceToken" && configContracts[i]["token"] !== tokenName) {
+                continue;
             }
 
             const parsedFile = JSON.parse(contractFromJSON);
@@ -177,7 +182,7 @@ async function checkKarmaProxy(chainId, provider, globalsInstance, configContrac
     await checkBytecode(provider, configContracts, contractName, log);
 
     // Get the contract instance
-    const karmaProxy = await findContractInstance(provider, configContracts, contractName);
+    const karmaProxy = await findContractInstance(provider, configContracts, contractName, "");
 
     log += ", address: " + karmaProxy.address;
     // Check owner + record CSV
@@ -195,7 +200,7 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
     await checkBytecode(provider, configContracts, contractName, log);
 
     // Get the contract instance
-    const mechMarketplaceProxy = await findContractInstance(provider, configContracts, contractName);
+    const mechMarketplaceProxy = await findContractInstance(provider, configContracts, contractName, "");
 
     log += ", address: " + mechMarketplaceProxy.address;
     // Check owner + record CSV
@@ -228,11 +233,14 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
     if (chainId != 100) {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenUSDCAddress"]);
         customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
+
+        isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
+        customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
     }
     if (chainId == 100) {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryNvmSubscriptionNativeAddress"]);
         customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
-    } else {
+    } else if (typeof globalsInstance["mechFactoryNvmSubscriptionTokenUSDCAddress"] !== "undefined") {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryNvmSubscriptionTokenUSDCAddress"]);
         customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
     }
@@ -249,6 +257,11 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         paymentType = "0x6406bb5f31a732f898e1ce9fdd988a80a808d36ab5d9a4a4805a8be8d197d5e3";
         balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
         customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenUSDCAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
+
+        // FixedPriceToken (olas)
+        paymentType = "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9";
+        balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
+        customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
     }
 
     // gnosis has a different behavior since its native is a stablecoin
@@ -257,7 +270,7 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         paymentType = "0x803dd08fe79d91027fc9024e254a0942372b92f3ccabc1bd19f4a5c2b251c316";
         balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
         customExpect(balanceTracker, globalsInstance["balanceTrackerNvmSubscriptionNativeAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
-    } else {
+    } else if (typeof globalsInstance["balanceTrackerNvmSubscriptionTokenUSDCAddress"] !== "undefined") {
         // NvmSubscriptionToken (usdc)
         paymentType = "0x0d6fd99afa9c4c580fab5e341922c2a5c4b61d880da60506193d7bf88944dd14";
         balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
@@ -265,10 +278,10 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
     }
 }
 
-// Check BalanceTracker: chain Id, provider, parsed globals, configuration contracts, contract name
-async function checkBalanceTracker(chainId, provider, globalsInstance, configContracts, contractName, log) {
+// Check BalanceTracker: chain Id, provider, parsed globals, configuration contracts, contract name, token type
+async function checkBalanceTracker(chainId, provider, globalsInstance, configContracts, contractName, tokenName, log) {
     // Get the contract instance
-    const balanceTracker = await findContractInstance(provider, configContracts, contractName);
+    const balanceTracker = await findContractInstance(provider, configContracts, contractName, tokenName);
     // Check if the contract exists, since different networks might have different set of balance trackers
     if (typeof balanceTracker === "undefined") {
         return;
@@ -284,7 +297,9 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
 
     // Check drainer
     const drainer = await balanceTracker.drainer();
-    customExpect(drainer, globalsInstance["drainerAddress"], log + ", function: drainer()");
+    const checkDrainerAddress = (chainId == 1 && tokenName === "olas") ?
+        globalsInstance["burnerAddress"] : globalsInstance["drainerAddress"];
+    customExpect(drainer, checkDrainerAddress, log + ", function: drainer()");
 
     // Additionally check fixed native token
     if (contractName === "BalanceTrackerFixedPriceNative") {
@@ -295,7 +310,8 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
     // Additionally check fixed token: gnosis is ignored since its native is a stablecoin
     if (contractName === "BalanceTrackerFixedPriceToken" && chainId != 100) {
         const token = await balanceTracker.token();
-        customExpect(token, globalsInstance["usdcAddress"], log + ", function: token()");
+        const tokenNameAddress = tokenName + "Address";
+        customExpect(token, globalsInstance[tokenNameAddress], log + ", function: token()");
     }
 
     // Additionally check NVM subscription for native
@@ -362,17 +378,23 @@ async function main() {
     // ################################# VERIFY CONTRACTS SETUP #################################
     if (verifySetup) {
         const globalNames = {
+            "mainnet": "scripts/deployment/globals_eth_mainnet.json",
             "gnosis": "scripts/deployment/globals_gnosis_mainnet.json",
             "base": "scripts/deployment/globals_base_mainnet.json",
             "polygon": "scripts/deployment/globals_polygon_mainnet.json",
-            "optimism": "scripts/deployment/globals_optimism_mainnet.json"
+            "optimism": "scripts/deployment/globals_optimism_mainnet.json",
+            "arbitrum": "scripts/deployment/globals_arbitrum_mainnet.json",
+            "celo": "scripts/deployment/globals_celo_mainnet.json"
         };
 
         const providerLinks = {
+            "mainnet": "https://eth-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MAINNET,
             "gnosis": "https://rpc.gnosischain.com",
             "base": "https://mainnet.base.org",
             "polygon": "https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MATIC,
-            "optimism": "https://public-op-mainnet.fastnode.io"
+            "optimism": "https://public-op-mainnet.fastnode.io",
+            "arbitrum": "https://arb1.arbitrum.io/rpc",
+            "celo": "https://forno.celo.org"
         };
 
         // Get all the globals processed
@@ -401,17 +423,20 @@ async function main() {
             await checkMechMarketplaceProxy(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "MechMarketplaceProxy", log);
 
             log = initLog + ", contract: " + "BalanceTrackerFixedPriceNative";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceNative", log);
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceNative", "", log);
 
-            log = initLog + ", contract: " + "BalanceTrackerFixedPriceToken";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceToken", log);
+            log = initLog + ", contract: " + "BalanceTrackerFixedPriceToken: USDC";
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceToken", "usdc", log);
+
+            log = initLog + ", contract: " + "BalanceTrackerFixedPriceToken: OLAS";
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceToken", "olas", log);
 
             // Skip networks where not deployed
             log = initLog + ", contract: " + "BalanceTrackerNvmSubscriptionNative";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionNative", log);
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionNative", "", log);
 
             log = initLog + ", contract: " + "BalanceTrackerNvmSubscriptionToken";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionToken", log);
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionToken", "usdc", log);
         }
     }
     // ################################# /VERIFY CONTRACTS SETUP #################################
