@@ -38,24 +38,9 @@
 
 ### Remaining Issues
 
-#### Issue A — Batch Loop Claim Is Inaccurate (Minor)
+#### Issue A — Batch Loop Claim (Corrected in Spec)
 
-Section 3.3 states: "The `_adjustInitialBalance` override is called once per request inside the batch loop."
-
-This is **incorrect**. In `adjustMechRequesterBalances` (BalanceTrackerBase.sol line 306-320), the loop only sums `mechDeliveryRates[]` into `totalMechDeliveryRate`. Then `_adjustInitialBalance` is called **once** with the total:
-
-```solidity
-// Loop only sums rates
-for (uint256 i = 0; i < mechDeliveryRates.length; ++i) {
-    totalMechDeliveryRate += mechDeliveryRates[i];
-}
-// Called ONCE with total, not per-request
-requesterBalance = _adjustInitialBalance(requester, requesterBalance, totalMechDeliveryRate, paymentData);
-```
-
-This means a single `paymentData` (single EIP-3009 authorization) must cover the **total** of all delivery rates in the batch. The spec's recommendation for per-request settlement (single-element arrays) is correct and is the only practical approach for x402 — but the stated reason ("called once per request") is wrong.
-
-**Impact:** Low. The recommendation to use single-element arrays is correct regardless. The spec text should be corrected to avoid confusion during implementation.
+Section 3.3 originally stated `_adjustInitialBalance` "is called once per request inside the batch loop." This was incorrect and has been corrected. The spec now accurately describes that `_adjustInitialBalance` is called once per `adjustMechRequesterBalances` invocation with the summed total, making per-request settlement (single-element arrays) the only practical approach for x402.
 
 #### Issue B — Gnosis USDC EIP-3009 Support Unverified
 
@@ -241,9 +226,9 @@ None — all existing contracts remain untouched as the spec intends. Only `docs
 
 Most gaps identified in the earlier review have been addressed by the updated spec. The following items remain:
 
-### Open Item 1 — Batch Loop Claim (Spec Correction Needed)
+### ~~Open Item 1 — Batch Loop Claim~~ (Resolved)
 
-Section 3.3 incorrectly states `_adjustInitialBalance` "is called once per request inside the batch loop." It is called once per `adjustMechRequesterBalances` call with the summed total rate. The per-request settlement recommendation is correct but the justification needs fixing. See Issue A above.
+Spec Section 3.3 has been corrected. It now accurately describes that `_adjustInitialBalance` is called once with the summed total, and that per-request settlement is the only practical approach for x402.
 
 ### Open Item 2 — Gnosis USDC EIP-3009 Verification
 

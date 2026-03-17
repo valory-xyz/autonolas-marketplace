@@ -134,7 +134,7 @@ The mech queries `MechMarketplace.fee()` for fee bps and returns this quote in t
 
 #### Batch semantics
 
-Each request in a `deliverMarketplaceWithSignatures` batch carries its **own** `paymentData` with its own EIP-3009 authorization and unique nonce. The `_adjustInitialBalance` override is called once per request inside the batch loop. The client signs one EIP-3009 authorization **per request**, not one covering the total batch.
+In `adjustMechRequesterBalances` (BalanceTrackerBase.sol), the batch loop sums `mechDeliveryRates[]` into `totalMechDeliveryRate`, then `_adjustInitialBalance` is called **once** with that total — not once per request. This means a single `paymentData` (single EIP-3009 authorization) must cover the summed total of all delivery rates in the batch. Batching is therefore impractical for x402: each HTTP request arrives independently with its own `X-Payment` header and EIP-3009 signature, and the client cannot know the aggregate amount at signing time. **Per-request settlement (single-element arrays) is the only practical approach.**
 
 **Critical: atomic batch revert.** Unlike `deliverMarketplace` (which uses `continue` to skip failed deliveries and returns a `bool[]`), `deliverMarketplaceWithSignatures` reverts the **entire transaction** if any single delivery fails — there is no partial success. Failure causes include bad signatures (`SignatureNotValidated`), duplicate request IDs (`AlreadyRequested`), and insufficient funds (`InsufficientBalance`). Per-request settlement (single-element arrays) is recommended to isolate failures and avoid one bad payment killing unrelated deliveries. The mech should pre-validate each EIP-3009 signature off-chain before submission to minimize on-chain reverts.
 
