@@ -20,7 +20,7 @@ There are **two paths**:
 
 x402scan has a self-registration page: [x402scan.com/resources/register](https://www.x402scan.com/resources/register)
 
-1. Submit the mech endpoint URL (e.g. `https://mech.autonolas.network/predict`)
+1. Submit the mech's x402 HTTP endpoint URL (e.g. `https://<mech-host>/x402/request`) — this is the public endpoint the mech will host for receiving x402 payment requests
 2. x402scan hits it
 3. If it returns a valid HTTP 402 response with proper x402 schema, it's listed automatically
 4. No manual approval, no external facilitator required
@@ -72,21 +72,87 @@ Same on every chain:
 
 No external facilitator dependency. No per-chain config. No cost.
 
-### Getting on x402scan
+### Getting on x402scan — Auto-Discovery
 
-Register each mech endpoint at [x402scan.com/resources/register](https://www.x402scan.com/resources/register):
+x402scan supports auto-discovery via two methods ([discovery spec](https://www.x402scan.com/discovery)). The mech must serve one of these alongside its x402 request endpoint:
 
-1. Submit the URL (e.g. `https://mech.autonolas.network/predict`)
-2. x402scan hits it, gets a valid HTTP 402 response
-3. Service is listed — no approval needed
+**Method 1 — `/.well-known/x402` (simple, recommended):**
 
-This works for **any chain** including Gnosis, because x402scan validates the response schema, not the chain.
+The mech serves a static JSON at `/.well-known/x402` listing its payable routes:
 
-### Limitations
+```json
+GET https://<mech-host>/.well-known/x402
 
-- **No Bazaar auto-indexing** — the mech appears on x402scan but NOT in the Bazaar `/discovery/resources` API. AI agents using the Bazaar to discover services programmatically won't find it.
-- **Manual registration per endpoint** — each mech URL needs to be registered individually. New mechs don't auto-appear.
-- **Less ecosystem integration** — x402 clients that use facilitators for discovery won't see the mech. Listed on x402scan's website but not programmatically discoverable.
+{
+  "version": 1,
+  "resources": ["POST /x402/request"]
+}
+```
+
+**Method 2 — OpenAPI spec (richer metadata):**
+
+The mech serves `/openapi.json` with `x-payment-info` on each payable route:
+
+```json
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Olas Mech",
+    "version": "1.0.0",
+    "guidance": "AI tool execution service. Send a POST with tool name and prompt to execute."
+  },
+  "paths": {
+    "/x402/request": {
+      "post": {
+        "summary": "AI tool execution via Olas mech",
+        "x-payment-info": {
+          "protocols": ["x402"],
+          "pricingMode": "fixed",
+          "price": "0.01"
+        },
+        "responses": {
+          "402": { "description": "Payment Required" }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "tool": { "type": "string", "description": "Tool name to execute" },
+                  "prompt": { "type": "string", "description": "Input prompt" }
+                },
+                "required": ["tool", "prompt"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+OpenAPI gives x402scan (and AI agents) richer context — input schema, pricing mode, descriptions — which improves discoverability. The `/.well-known/x402` method is simpler but only lists routes without metadata.
+
+**Registering with x402scan:**
+
+Once the mech serves a discovery endpoint, register the origin:
+
+```
+POST https://x402scan.com/api/x402/registry/register-origin
+Body: { "origin": "https://<mech-host>" }
+```
+
+Or validate locally first using the x402scan CLI:
+
+```bash
+npx -y @agentcash/discovery@latest discover "https://<mech-host>"
+```
+
+This crawls the mech's discovery endpoint and shows all detected routes with pricing — same as what x402scan will see.
+
+This works for **any chain** including Gnosis, because x402scan validates the discovery response schema, not the chain.
 
 ### Coexisting with off-chain (non-x402) requests
 
