@@ -59,18 +59,33 @@ The x402 ecosystem is heavily concentrated on Base (~14k services). Polygon has 
 
 ## Option A — Self-Facilitate on All Chains + Direct Registration
 
-The mech is its own facilitator everywhere (as the spec currently describes), and we register on x402scan manually. This is the simplest approach and works on all chains including Gnosis.
+The mech is its own facilitator everywhere (as the spec currently describes), and self-registers on x402scan at startup. This is the simplest approach and works on all chains including Gnosis.
 
 ### How it works
 
 ```
 Same on every chain:
+  Mech serves /.well-known/x402 (static route listing)
   Mech verifies EIP-3009 signatures in-process (inside the behaviour)
   Mech settles via deliverMarketplaceWithSignatures
-  Mech registered on x402scan via register page
+  Mech auto-registers with x402scan on startup
 ```
 
 No external facilitator dependency. No per-chain config. No cost.
+
+### Self-registration at startup
+
+On launch, the mech's startup behaviour:
+
+1. Serves `/.well-known/x402` as a static endpoint (lists payable routes)
+2. Calls the x402scan registration API once:
+
+```
+POST https://x402scan.com/api/x402/registry/register-origin
+Body: { "origin": "https://<mech-host>" }
+```
+
+x402scan crawls the `/.well-known/x402` endpoint, discovers the payable routes, and indexes them. No manual steps needed — every mech that starts up is automatically discoverable.
 
 ### Getting on x402scan — Auto-Discovery
 
