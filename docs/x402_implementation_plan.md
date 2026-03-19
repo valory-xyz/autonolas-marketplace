@@ -70,21 +70,32 @@ if paymentData is empty:
     return super._adjustInitialBalance(requester, balance, deliveryRate, "")
     // Falls back to standard transferFrom behavior
 
-// Decode EIP-3009 params from paymentData
-(address from, address to, uint256 value, uint256 validAfter, uint256 validBefore,
- bytes32 nonce, uint8 v, bytes32 r, bytes32 s) = abi.decode(paymentData, ...)
+// Decode array of EIP-3009 authorizations from paymentData
+// Single auth is encoded as a one-element array; batches use N-element arrays
+Authorization[] memory auths = abi.decode(paymentData, (Authorization[]))
 
-// Validations
-require(from == requester)          // X402InvalidSender
-require(to == address(this))        // X402InvalidRecipient
-require(value + balance >= deliveryRate)  // X402InsufficientPayment
+uint256 totalTransferred;
+for (uint256 i = 0; i < auths.length; i++):
+    // Validations per authorization
+    require(auths[i].from == requester)      // X402InvalidSender
+    require(auths[i].to == address(this))    // X402InvalidRecipient
 
-// Execute atomic transfer — bypasses _getRequiredFunds/transferFrom entirely
-IUSDC(token).transferWithAuthorization(from, to, value, validAfter, validBefore, nonce, v, r, s)
+    // Execute atomic transfer — bypasses _getRequiredFunds/transferFrom entirely
+    IUSDC(token).transferWithAuthorization(
+        auths[i].from, auths[i].to, auths[i].value,
+        auths[i].validAfter, auths[i].validBefore,
+        auths[i].nonce, auths[i].v, auths[i].r, auths[i].s
+    )
+    totalTransferred += auths[i].value
+
+// Check total covers delivery rate (which is already the summed total for batches)
+require(balance + totalTransferred >= deliveryRate)  // X402InsufficientPayment
 
 // Update balance: add received funds, subtract delivery rate
-return (balance + value - deliveryRate)
+return (balance + totalTransferred - deliveryRate)
 ```
+
+This design supports both per-request settlement (single-element array) and batching (N-element array) with zero interface changes to MechMarketplace or OlasMech.
 
 **Constructor:** Same as `BalanceTrackerFixedPriceToken` — `(mechMarketplace, drainer, usdcTokenAddress)`
 
@@ -110,9 +121,26 @@ bytes32 public constant PAYMENT_TYPE = 0x...;
 
 **Pattern:** Identical to `MechFactoryFixedPriceTokenUSDC` but creates `MechFixedPriceTokenX402` instances.
 
-#### 1.4 Add error definitions
+#### 1.4 Add struct and error definitions
 
-In `contracts/interfaces/IErrorsMarketplace.sol` or a new `IErrorsX402.sol`:
+In `contracts/mechs/token/x402/BalanceTrackerX402.sol` (or a shared interface):
+
+**Struct:**
+```solidity
+struct Authorization {
+    address from;
+    address to;
+    uint256 value;
+    uint256 validAfter;
+    uint256 validBefore;
+    bytes32 nonce;
+    uint8 v;
+    bytes32 r;
+    bytes32 s;
+}
+```
+
+**Custom errors** (in `IErrorsX402.sol` or inline):
 - `X402InvalidSender(address provided, address expected)`
 - `X402InvalidRecipient(address provided, address expected)`
 - `X402InsufficientPayment(uint256 provided, uint256 required)`
@@ -127,7 +155,8 @@ In `contracts/interfaces/IErrorsMarketplace.sol` or a new `IErrorsX402.sol`:
 1. **Happy path:** Client signs EIP-3009, mech delivers via `deliverMarketplaceWithSignatures` with `paymentData`, `_adjustInitialBalance` override executes `transferWithAuthorization`, funds move atomically, balances update correctly
 2. **Fallback:** Empty `paymentData` falls back to standard `transferFrom` pre-deposit flow via `super._adjustInitialBalance`
 3. **Validation failures:** Wrong `from` address, wrong `to` address, insufficient `value`, expired `validBefore`, already-used nonce
-4. **Per-request settlement:** Single-element arrays with individual EIP-3009 authorizations
+4. **Per-request settlement:** Single-element authorization arrays with individual EIP-3009 authorizations
+4b. **Batch settlement:** Multi-element authorization arrays — multiple `transferWithAuthorization` calls in one tx, total covers summed delivery rates
 5. **Fee accounting:** Verify `processPaymentByMultisig` fee calculation is unchanged
 6. **Reentrancy:** Attempt reentrancy via malicious token (reuse existing `MechReentrancyAttacker` pattern)
 
@@ -228,7 +257,7 @@ Most gaps identified in the earlier review have been addressed by the updated sp
 
 ### ~~Open Item 1 — Batch Loop Claim~~ (Resolved)
 
-Spec Section 3.3 has been corrected. It now accurately describes that `_adjustInitialBalance` is called once with the summed total, and that per-request settlement is the only practical approach for x402.
+Spec Section 3.3 has been corrected. It now accurately describes that `_adjustInitialBalance` is called once with the summed total. Batching IS supported by encoding multiple EIP-3009 authorizations as an array in `paymentData` — the `BalanceTrackerX402` override loops through each auth and calls `transferWithAuthorization` per auth. Per-request settlement is recommended for v1 simplicity, with batching as a later optimization.
 
 ### Open Item 2 — Gnosis USDC EIP-3009 Verification
 
