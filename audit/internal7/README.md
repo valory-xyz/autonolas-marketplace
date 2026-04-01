@@ -31,6 +31,8 @@
 
 ---
 
+All findings are addressed in [docs/Vulnerabilities_marketplace.md](../../docs/Vulnerabilities_marketplace.md).
+
 ## Low Findings
 
 ### L-1: Missing reentrancy guard on OlasMech.deliverMarketplaceWithSignatures
@@ -43,6 +45,8 @@
 
 **Recommendation**: Add reentrancy guard for defense-in-depth consistency with `deliverToMarketplace()`.
 
+[Addressed as Vulnerability #1](../../docs/Vulnerabilities_marketplace.md#1-delivermarketplacewithsignatures-reentrancy-guard).
+
 ### L-2: EIP-712 signature missing typeHash
 
 **File**: `MechMarketplace.sol:895-905`
@@ -52,6 +56,8 @@
 **Exploit analysis**: No practical collision or replay path exists. The hash includes `address(this)` as the first field, and the domain separator includes the contract address and chainId. Cross-contract collision requires identical domain separator (impossible — different addresses) AND identical struct layout.
 
 **Recommendation**: Add proper `typeHash` for EIP-712 standards compliance.
+
+[Addressed as Vulnerability #2](../../docs/Vulnerabilities_marketplace.md#2-getrequestid-eip-712-typehash).
 
 ### L-3: Unchecked ERC-20 transfer/transferFrom return values
 
@@ -68,11 +74,15 @@ The developer is aware (comment at `BalanceTrackerFixedPriceToken.sol:8`: "Note 
 
 **Recommendation**: If USDT or other non-standard tokens are ever added, use SafeERC20.
 
+[Addressed as Vulnerability #3](../../docs/Vulnerabilities_marketplace.md#3-unchecked-erc-20-transfer-return-values).
+
 ### L-4: Nevermined subscription refund in wrong denomination
 
 **Files**: `BalanceTrackerNvmSubscriptionNative.sol`, `BalanceTrackerNvmSubscriptionToken.sol`
 
 When delivery rate is lower than agreed, the refund goes to `mapRequesterBalances[requester]` (native/token), not back as NFT subscription credits. Requester paid with NFT credits but gets refunded in a different denomination.
+
+[Addressed as Vulnerability #4](../../docs/Vulnerabilities_marketplace.md#4-nevermined-subscription-refund-denomination).
 
 ### L-5: Mech created without balance tracker validation
 
@@ -80,17 +90,24 @@ When delivery rate is lower than agreed, the refund goes to `mapRequesterBalance
 
 `create()` does not verify `mapPaymentTypeBalanceTrackers[paymentType] != address(0)`. Mech appears valid but requests to it revert.
 
+[Addressed as Vulnerability #5](../../docs/Vulnerabilities_marketplace.md#5-mech-created-without-balance-tracker-validation).
+
 ### L-6: Mech numUndeliveredRequests counter inconsistency
 
 **File**: `OlasMech.sol:192`
 
 Non-priority mech delivering expired requests may have inconsistent counter. View-only, no security impact.
 
+[Addressed as Vulnerability #6](../../docs/Vulnerabilities_marketplace.md#6-numundeliveredrequests-counter-inconsistency).
+
 ### L-7: Celo native token drain path
 
 **File**: `BalanceTrackerFixedPriceNativeCelo.sol:18`
 
 `_wrap()` is no-op on Celo, but `_drain()` tries to transfer wrapped token. Needs integration test verification.
+
+Verified safe via Forge fork test: [test/fork/ForkCeloDrain.t.sol](../../test/fork/ForkCeloDrain.t.sol).
+On Celo, native CELO is the ERC-20 at `0x471EcE3750Da237f93B8E339c536989b8978a438` — no wrapping is needed, and `IToken(CELO).transfer()` correctly moves native balance via the Celo precompile. The fork test confirms: `drain()` does not revert, emits correct `Transfer` and `Drained` events, and resets `collectedFees` to 0. Run with: `forge test --fork-url https://forno.celo.org --match-contract ForkCeloDrain -vvv`.
 
 ### L-8: No refund for expired undelivered requests
 
@@ -100,25 +117,29 @@ Requester funds are debited on request creation. If no mech delivers (even after
 
 **Recommendation**: Add `reclaimExpiredRequest(bytes32 requestId)` that refunds requester for expired, undelivered requests.
 
+[Addressed as Vulnerability #7](../../docs/Vulnerabilities_marketplace.md#7-no-refund-for-expired-undelivered-requests).
+
 ### L-9: Signature v-value accepts 0-3
 
 **File**: `MechMarketplace.sol:438-441`
 
 `_verifySignedHash` accepts `v` values 0-3 and adds 27. Standard ECDSA only uses v={0,1,27,28}. Values v=2,3 produce invalid recovery but are caught by the address check.
 
+[Addressed as Vulnerability #8](../../docs/Vulnerabilities_marketplace.md#8-signature-v-value-accepts-0-3).
+
 ---
 
 ## Notes (7)
 
-| ID | Title | File |
-|----|-------|------|
-| N-1 | Storage used as inter-function message passing | BalanceTrackerNvmSubscriptionNative.sol:121 |
-| N-2 | Zero-address requesters in arrays passed to finalizeDeliveryRates | MechMarketplace.sol:735,818 |
-| N-3 | KarmaProxy fallback not payable | KarmaProxy.sol:57 |
-| N-4 | totalDeliveryRate overflow (reverts safely) | BalanceTrackerBase.sol:212 |
-| N-5 | Karma int256 theoretical overflow (unreachable) | Karma.sol:130,146 |
-| N-6 | trackerBalance not decremented on withdrawal | BalanceTrackerNvmSubscriptionNative.sol:49 |
-| N-7 | SubscriptionProvider.fulfill() permissionless | SubscriptionProvider.sol:120 |
+| ID | Title | File | Resolution |
+|----|-------|------|------------|
+| N-1 | Storage used as inter-function message passing | BalanceTrackerNvmSubscriptionNative.sol:121 | [Vulnerability #9](../../docs/Vulnerabilities_marketplace.md#9-storage-used-as-inter-function-message-passing) |
+| N-2 | Zero-address requesters in arrays passed to finalizeDeliveryRates | MechMarketplace.sol:735,818 | [Vulnerability #10](../../docs/Vulnerabilities_marketplace.md#10-zero-address-requesters-in-arrays-passed-to-finalizedeliveryrates) |
+| N-3 | KarmaProxy fallback not payable | KarmaProxy.sol:57 | [Vulnerability #11](../../docs/Vulnerabilities_marketplace.md#11-karmaproxy-fallback-not-payable) |
+| N-4 | totalDeliveryRate overflow (reverts safely) | BalanceTrackerBase.sol:212 | [Vulnerability #12](../../docs/Vulnerabilities_marketplace.md#12-totaldeliveryrate-overflow) |
+| N-5 | Karma int256 theoretical overflow (unreachable) | Karma.sol:130,146 | [Vulnerability #13](../../docs/Vulnerabilities_marketplace.md#13-karma-int256-theoretical-overflow) |
+| N-6 | trackerBalance not decremented on withdrawal | BalanceTrackerNvmSubscriptionNative.sol:49 | [Vulnerability #14](../../docs/Vulnerabilities_marketplace.md#14-trackerbalance-not-decremented-on-withdrawal) |
+| N-7 | SubscriptionProvider.fulfill() permissionless | SubscriptionProvider.sol:120 | [Vulnerability #15](../../docs/Vulnerabilities_marketplace.md#15-subscriptionproviderfulfill-permissionless) |
 
 ---
 
