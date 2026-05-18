@@ -58,3 +58,15 @@ jobs:
           tar -xzf gitleaks_8.21.2_linux_x64.tar.gz && \
           sudo install gitleaks /usr/bin && \
           gitleaks detect --report-format json --report-path leak_report -v
+
+  all-checks-passed:
+    name: All checks passed
+    if: always()
+    needs: [build, scan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
+      - name: All required jobs succeeded
+        run: echo "All required jobs succeeded."
