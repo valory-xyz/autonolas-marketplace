@@ -134,7 +134,13 @@ The mech queries `MechMarketplace.fee()` for fee bps and returns this quote in t
 
 #### Batch semantics
 
-In `adjustMechRequesterBalances` (BalanceTrackerBase.sol), the batch loop sums `mechDeliveryRates[]` into `totalMechDeliveryRate`, then `_adjustInitialBalance` is called **once** with that total — not once per request. This means a single `paymentData` (single EIP-3009 authorization) must cover the summed total of all delivery rates in the batch. Batching is therefore impractical for x402: each HTTP request arrives independently with its own `X-Payment` header and EIP-3009 signature, and the client cannot know the aggregate amount at signing time. **Per-request settlement (single-element arrays) is the only practical approach.**
+In `adjustMechRequesterBalances` (BalanceTrackerBase.sol), the batch loop sums `mechDeliveryRates[]` into `totalMechDeliveryRate`, then `_adjustInitialBalance` is called **once** with that total — not once per request.
+
+**Batching IS achievable.** Because `paymentData` is an opaque `bytes` blob interpreted only by the specific BalanceTracker, `BalanceTrackerX402._adjustInitialBalance` can decode it as an **array** of EIP-3009 authorizations. The override loops through each authorization, calls `transferWithAuthorization` for each, sums the transferred amounts, and checks the total covers `totalMechDeliveryRate`. No changes to `MechMarketplace`, `OlasMech`, or the `paymentData` interface are required.
+
+Off-chain, the mech accumulates multiple x402 requests (each with its own EIP-3009 auth from the HTTP `X-Payment` header), encodes all authorizations into a single `paymentData = abi.encode(authArray)`, and calls `deliverMarketplaceWithSignatures` as a normal batch. Each `transferWithAuthorization` is still ~50k gas, but the marketplace overhead (signature verification, karma updates, request bookkeeping) is amortized — one transaction instead of N.
+
+**Per-request settlement is recommended for v1.** While batching is supported at the SC level, per-request settlement (single-element arrays) is simpler to implement off-chain and isolates failures. Batching can be enabled as an optimization in a later iteration.
 
 **Critical: atomic batch revert.** Unlike `deliverMarketplace` (which uses `continue` to skip failed deliveries and returns a `bool[]`), `deliverMarketplaceWithSignatures` reverts the **entire transaction** if any single delivery fails — there is no partial success. Failure causes include bad signatures (`SignatureNotValidated`), duplicate request IDs (`AlreadyRequested`), and insufficient funds (`InsufficientBalance`). Per-request settlement (single-element arrays) is recommended to isolate failures and avoid one bad payment killing unrelated deliveries. The mech should pre-validate each EIP-3009 signature off-chain before submission to minimize on-chain reverts.
 
@@ -226,7 +232,11 @@ EIP-3009 nonces are random `bytes32` values (not sequential), generated per-requ
 4. If the nonce is fresh, it is added to the set and the request proceeds.
 5. The nonce set is persisted to the mech's shared state (`synchronized_data`) so it survives agent restarts and is consistent across the agent ensemble.
 
-**Multi-mech isolation:** Each mech has its own `BalanceTrackerX402` address (the `to` field in the EIP-3009 authorization). An authorization signed for one mech's balance tracker cannot be replayed against a different mech. Cross-mech nonce tracking is not required.
+**Multi-mech isolation:** All x402 mechs share a single `BalanceTrackerX402` contract (resolved via `mapPaymentTypeBalanceTrackers[paymentType]`). The `to` field in every EIP-3009 authorization is the same address. Cross-mech replay is prevented by two independent mechanisms:
+1. **USDC nonce consumption:** Each `transferWithAuthorization` nonce is one-time use at the USDC contract level. Once consumed, it cannot be replayed by any party.
+2. **Request signature binding:** The `requestId` includes the mech address (via `getRequestId(mech, requester, data, deliveryRate, paymentType, nonce)`), and the requester's signature is verified against this requestId. A different mech cannot produce a valid requestId for the same signed request.
+
+Cross-mech nonce tracking is not required.
 
 ---
 
@@ -469,7 +479,7 @@ Unit tests for the three new contracts, covering:
 1. **Happy path:** Client signs EIP-3009, mech delivers via `deliverMarketplaceWithSignatures` with `paymentData`, `_adjustInitialBalance` override executes `transferWithAuthorization`, funds move atomically, balances update correctly
 2. **Fallback:** Empty `paymentData` falls back to standard `transferFrom` pre-deposit flow via `super._adjustInitialBalance`
 3. **Validation failures:** Wrong `from` address, wrong `to` address, insufficient `value`, expired `validBefore`, already-used nonce
-4. **Batch delivery:** Multiple requests in one call, each with its own EIP-3009 authorization and unique nonce
+4. **Batch delivery:** Multiple requests in one call with array-encoded `paymentData` containing multiple EIP-3009 authorizations (each with unique nonce), verifying total transferred covers summed delivery rates
 5. **Fee accounting:** Verify `processPaymentByMultisig` fee calculation is unchanged
 6. **Reentrancy:** Attempt reentrancy via malicious token (reuse existing `MechReentrancyAttacker` pattern)
 
