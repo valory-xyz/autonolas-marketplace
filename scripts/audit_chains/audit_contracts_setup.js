@@ -301,8 +301,8 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
         globalsInstance["burnerAddress"] : globalsInstance["drainerAddress"];
     customExpect(drainer, checkDrainerAddress, log + ", function: drainer()");
 
-    // Additionally check fixed native token
-    if (contractName === "BalanceTrackerFixedPriceNative") {
+    // Additionally check fixed native token (including the Celo-specific variant)
+    if (contractName === "BalanceTrackerFixedPriceNative" || contractName === "BalanceTrackerFixedPriceNativeCelo") {
         const wrappedNativeToken = await balanceTracker.wrappedNativeToken();
         customExpect(wrappedNativeToken, globalsInstance["wrappedNativeTokenAddress"], log + ", function: wrappedNativeToken()");
     }
@@ -457,8 +457,11 @@ async function main() {
             log = initLog + ", contract: " + "MechMarketplaceProxy";
             await checkMechMarketplaceProxy(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "MechMarketplaceProxy", log);
 
-            log = initLog + ", contract: " + "BalanceTrackerFixedPriceNative";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceNative", "", log);
+            // Celo deploys a chain-specific BalanceTrackerFixedPriceNativeCelo variant (its native token is an ERC-20)
+            const fixedPriceNativeName = configs[i]["chainId"] == 42220 ?
+                "BalanceTrackerFixedPriceNativeCelo" : "BalanceTrackerFixedPriceNative";
+            log = initLog + ", contract: " + fixedPriceNativeName;
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], fixedPriceNativeName, "", log);
 
             log = initLog + ", contract: " + "BalanceTrackerFixedPriceToken: USDC";
             await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceToken", "usdc", log);
