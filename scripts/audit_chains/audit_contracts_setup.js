@@ -345,6 +345,36 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
     }
 }
 
+// Check SubscriptionProvider: chain Id, provider, parsed globals, configuration contracts, contract name
+async function checkSubscriptionProvider(chainId, provider, globalsInstance, configContracts, contractName, log) {
+    // Get the contract instance
+    const subscriptionProvider = await findContractInstance(provider, configContracts, contractName, "");
+    // Check if the contract exists, since not all networks have a SubscriptionProvider deployed
+    if (typeof subscriptionProvider === "undefined") {
+        return;
+    }
+
+    // Check the bytecode
+    await checkBytecode(provider, configContracts, contractName, log);
+
+    log += ", address: " + subscriptionProvider.address;
+    // Check owner + record CSV
+    const ownerInfo = await checkOwner(chainId, subscriptionProvider, globalsInstance, log);
+    recordOwnershipRow(chainId, contractName, subscriptionProvider.address, ownerInfo);
+
+    // Check DID registry address
+    const didRegistry = await subscriptionProvider.didRegistry();
+    customExpect(didRegistry, globalsInstance["didRegistryAddress"], log + ", function: didRegistry()");
+
+    // Check transfer NFT condition address
+    const transferNFTCondition = await subscriptionProvider.transferNFTCondition();
+    customExpect(transferNFTCondition, globalsInstance["transferNFTConditionAddress"], log + ", function: transferNFTCondition()");
+
+    // Check escrow payment condition address
+    const escrowPaymentCondition = await subscriptionProvider.escrowPaymentCondition();
+    customExpect(escrowPaymentCondition, globalsInstance["escrowPaymentConditionAddress"], log + ", function: escrowPaymentCondition()");
+}
+
 async function main() {
     // Read configuration from the JSON file
     const configFile = "docs/configuration.json";
@@ -387,11 +417,16 @@ async function main() {
             "celo": "scripts/deployment/globals_celo_mainnet.json"
         };
 
+        // Use Alchemy endpoints when API keys are provided, otherwise fall back to public RPCs
         const providerLinks = {
-            "mainnet": "https://eth-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MAINNET,
+            "mainnet": process.env.ALCHEMY_API_KEY_MAINNET
+                ? "https://eth-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MAINNET
+                : "https://ethereum-rpc.publicnode.com",
             "gnosis": "https://rpc.gnosischain.com",
             "base": "https://mainnet.base.org",
-            "polygon": "https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MATIC,
+            "polygon": process.env.ALCHEMY_API_KEY_MATIC
+                ? "https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MATIC
+                : "https://polygon-bor-rpc.publicnode.com",
             "optimism": "https://public-op-mainnet.fastnode.io",
             "arbitrum": "https://arb1.arbitrum.io/rpc",
             "celo": "https://forno.celo.org"
@@ -437,6 +472,10 @@ async function main() {
 
             log = initLog + ", contract: " + "BalanceTrackerNvmSubscriptionToken";
             await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionToken", "usdc", log);
+
+            // Skip networks where not deployed
+            log = initLog + ", contract: " + "SubscriptionProvider";
+            await checkSubscriptionProvider(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "SubscriptionProvider", log);
         }
     }
     // ################################# /VERIFY CONTRACTS SETUP #################################
