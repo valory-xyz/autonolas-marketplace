@@ -463,8 +463,8 @@
         "token": "olas"
       },
       {
-        "name": "BalanceTrackerFixedPriceNative",
-        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceNative.json",
+        "name": "BalanceTrackerFixedPriceNativeCelo",
+        "artifact": "abis/0.8.30/BalanceTrackerFixedPriceNativeCelo.json",
         "address": "0x93111f6C267068A5d7356114D61d0f09bFD53a54"
       },
       {

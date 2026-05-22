@@ -301,8 +301,8 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
         globalsInstance["burnerAddress"] : globalsInstance["drainerAddress"];
     customExpect(drainer, checkDrainerAddress, log + ", function: drainer()");
 
-    // Additionally check fixed native token
-    if (contractName === "BalanceTrackerFixedPriceNative") {
+    // Additionally check fixed native token (including the Celo-specific variant)
+    if (contractName === "BalanceTrackerFixedPriceNative" || contractName === "BalanceTrackerFixedPriceNativeCelo") {
         const wrappedNativeToken = await balanceTracker.wrappedNativeToken();
         customExpect(wrappedNativeToken, globalsInstance["wrappedNativeTokenAddress"], log + ", function: wrappedNativeToken()");
     }
@@ -343,6 +343,36 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
             customExpect(tokenCreditRatio.toString(), ethers.BigNumber.from(globalsInstance["tokenCreditRatio"]).toString(), log + ", function: tokenCreditRatio()");
         }
     }
+}
+
+// Check SubscriptionProvider: chain Id, provider, parsed globals, configuration contracts, contract name
+async function checkSubscriptionProvider(chainId, provider, globalsInstance, configContracts, contractName, log) {
+    // Get the contract instance
+    const subscriptionProvider = await findContractInstance(provider, configContracts, contractName, "");
+    // Check if the contract exists, since not all networks have a SubscriptionProvider deployed
+    if (typeof subscriptionProvider === "undefined") {
+        return;
+    }
+
+    // Check the bytecode
+    await checkBytecode(provider, configContracts, contractName, log);
+
+    log += ", address: " + subscriptionProvider.address;
+    // Check owner + record CSV
+    const ownerInfo = await checkOwner(chainId, subscriptionProvider, globalsInstance, log);
+    recordOwnershipRow(chainId, contractName, subscriptionProvider.address, ownerInfo);
+
+    // Check DID registry address
+    const didRegistry = await subscriptionProvider.didRegistry();
+    customExpect(didRegistry, globalsInstance["didRegistryAddress"], log + ", function: didRegistry()");
+
+    // Check transfer NFT condition address
+    const transferNFTCondition = await subscriptionProvider.transferNFTCondition();
+    customExpect(transferNFTCondition, globalsInstance["transferNFTConditionAddress"], log + ", function: transferNFTCondition()");
+
+    // Check escrow payment condition address
+    const escrowPaymentCondition = await subscriptionProvider.escrowPaymentCondition();
+    customExpect(escrowPaymentCondition, globalsInstance["escrowPaymentConditionAddress"], log + ", function: escrowPaymentCondition()");
 }
 
 async function main() {
@@ -387,11 +417,16 @@ async function main() {
             "celo": "scripts/deployment/globals_celo_mainnet.json"
         };
 
+        // Use Alchemy endpoints when API keys are provided, otherwise fall back to public RPCs
         const providerLinks = {
-            "mainnet": "https://eth-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MAINNET,
+            "mainnet": process.env.ALCHEMY_API_KEY_MAINNET
+                ? "https://eth-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MAINNET
+                : "https://ethereum-rpc.publicnode.com",
             "gnosis": "https://rpc.gnosischain.com",
             "base": "https://mainnet.base.org",
-            "polygon": "https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MATIC,
+            "polygon": process.env.ALCHEMY_API_KEY_MATIC
+                ? "https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMY_API_KEY_MATIC
+                : "https://polygon-bor-rpc.publicnode.com",
             "optimism": "https://public-op-mainnet.fastnode.io",
             "arbitrum": "https://arb1.arbitrum.io/rpc",
             "celo": "https://forno.celo.org"
@@ -422,8 +457,11 @@ async function main() {
             log = initLog + ", contract: " + "MechMarketplaceProxy";
             await checkMechMarketplaceProxy(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "MechMarketplaceProxy", log);
 
-            log = initLog + ", contract: " + "BalanceTrackerFixedPriceNative";
-            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceNative", "", log);
+            // Celo deploys a chain-specific BalanceTrackerFixedPriceNativeCelo variant (its native token is an ERC-20)
+            const fixedPriceNativeName = configs[i]["chainId"] == 42220 ?
+                "BalanceTrackerFixedPriceNativeCelo" : "BalanceTrackerFixedPriceNative";
+            log = initLog + ", contract: " + fixedPriceNativeName;
+            await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], fixedPriceNativeName, "", log);
 
             log = initLog + ", contract: " + "BalanceTrackerFixedPriceToken: USDC";
             await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerFixedPriceToken", "usdc", log);
@@ -437,6 +475,10 @@ async function main() {
 
             log = initLog + ", contract: " + "BalanceTrackerNvmSubscriptionToken";
             await checkBalanceTracker(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "BalanceTrackerNvmSubscriptionToken", "usdc", log);
+
+            // Skip networks where not deployed
+            log = initLog + ", contract: " + "SubscriptionProvider";
+            await checkSubscriptionProvider(configs[i]["chainId"], providers[i], globals[i], configs[i]["contracts"], "SubscriptionProvider", log);
         }
     }
     // ################################# /VERIFY CONTRACTS SETUP #################################
