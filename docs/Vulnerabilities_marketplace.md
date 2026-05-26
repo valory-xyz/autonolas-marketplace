@@ -21,6 +21,7 @@
 | 13 | Karma `int256` theoretical overflow | Karma | Informative |
 | 14 | `trackerBalance` not decremented on withdrawal | BalanceTrackerNvmSubscriptionNative | Informative |
 | 15 | `SubscriptionProvider.fulfill()` permissionless | SubscriptionProvider | Informative |
+| 16 | `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits | BalanceTrackerNvmSubscriptionNative | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -312,3 +313,34 @@ their own access control and state machine checks internally. A permissionless c
 not meet the NVM preconditions will simply revert.
 
 No change is recommended. The NVM framework's internal access control is sufficient.
+
+### 16. `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits
+**Severity**: Low
+
+`BalanceTrackerNvmSubscriptionNative` inherits from `BalanceTrackerFixedPriceNative`, which exposes
+a payable `depositFor(address account)` that credits the account's balance:
+```solidity
+function depositFor(address account) external payable virtual {
+    mapRequesterBalances[account] += msg.value;
+    emit Deposit(account, address(0), msg.value);
+}
+```
+Because the subscription variant did not override this function, anyone could send native funds
+through `depositFor()` and inflate `mapRequesterBalances`, bypassing the NFT subscription model
+(which is the only intended path for crediting balances on this contract). The companion
+`_getOrRestrictNativeValue()` already rejects `msg.value > 0` on a request, so the only remaining
+direct-funding path was `depositFor()`.
+
+The fix overrides `depositFor()` to unconditionally revert:
+```solidity
+function depositFor(address) external payable virtual override {
+    revert NoDepositAllowed(msg.value);
+}
+```
+This aligns `BalanceTrackerNvmSubscriptionNative` with `BalanceTrackerNvmSubscriptionToken`, which
+already reverts both `deposit()` and `depositFor()` on its token variant.
+
+**Deployment status:** the contract source has been updated, but the on-chain instances on
+Gnosis (`0x7D686bD1fD3CFF6E45a40165154D61043af7D67c`) and Base
+(`0x3d79737f05966c5925a04d1b04110006F5a072bE`) still run the pre-fix bytecode. They need to be
+redeployed before this vulnerability is closed on-chain.
