@@ -114,7 +114,7 @@ The older list of contract addresses for different chains and their full contrac
 
 
 ### Audits
-- The audit is provided as development matures. The latest audit report can be found here: [audits](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits).
+- The latest external audit is the [Cantina January 2025 audit](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits/cantina_valory_january2025.pdf). All internal and external audit materials are in the [audits](https://github.com/valory-xyz/autonolas-marketplace/tree/main/audits) folder.
 - A list of known vulnerabilities can be found here: [Vulnerabilities list](https://github.com/valory-xyz/autonolas-marketplace/blob/main/docs/Vulnerabilities_marketplace.md).
 
 
