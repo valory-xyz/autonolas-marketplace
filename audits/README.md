@@ -12,4 +12,6 @@ An internal audit with a focus on token-usdc ref:nmv marketplace contracts is lo
 An internal audit with a focus on all contracts is located in this folder: [internal audit 7](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits/internal7). <br>
 
 ### External audits
-- 19.02.2025 by [Cantina](https://cantina.xyz/portfolio/ff3a291b-4cdd-4ebb-9828-c0ebc7f21edf)
+The external audit report is archived as a PDF in this folder so it remains
+available even if the original hosting changes.
+- 19.02.2025 by Cantina — [cantina_valory_january2025.pdf](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits/cantina_valory_january2025.pdf) (also at [cantina.xyz](https://cantina.xyz/portfolio/ff3a291b-4cdd-4ebb-9828-c0ebc7f21edf))
