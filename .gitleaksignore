@@ -229,4 +229,5 @@ ad71fd4b9892a4e7b0f76b294c4fde6b18663b34:scripts/deployment/globals_eth_mainnet.
 ad71fd4b9892a4e7b0f76b294c4fde6b18663b34:scripts/deployment/globals_eth_mainnet.json:generic-api-key:28
 ad71fd4b9892a4e7b0f76b294c4fde6b18663b34:scripts/deployment/globals_eth_mainnet.json:generic-api-key:29
 ba896fdce4ba4df320ef592c3acc1366f5cf9442:scripts/deployment/globals_arbitrum_mainnet.json:generic-api-key:31
+e08b32e1e639b2f183894aaf92a7062e87c360b8:scripts/deployment/globals_celo_mainnet.json:generic-api-key:44
   
