@@ -25,12 +25,28 @@ Submitted via `propose()` on the GovernorOLAS currently holding the Timelock `PR
 pre-proposal_11 it is `0x8E84B5055492901988B831817e4Ace5275A3b401`). Every call is executed by
 the Timelock at `0x3C1fF68f5aa342D296d4DEe4Bb1cACCA912D95fE`.
 
+**Pre-computed proposalId:**
+`8871217640108518937207611538047255614811664982782591155744986646749332103486`
+(verified equal to on-chain `GovernorOLAS.hashProposal(...)` against the active GovernorOLAS at
+`0x8E84B5055492901988B831817e4Ace5275A3b401`).
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `Proposal01FeeActivation.s.sol` | Forge builder — single source of truth for the 7 `(target, value, calldata)` entries and the `DESCRIPTION`. `forge script … :Proposal01FeeActivation` prints the arrays. |
 | `description.txt` | Canonical proposal description (matches the builder's `DESCRIPTION` byte-for-byte; the proposalId is computed from it). |
+| `calldata.json` | The builder's emitted `[{index,target,value,calldata}]`, used to generate the HTML. |
+| `annotate.js` | Decodes `calldata.json` + `description.txt` → the annotated `proposal_01.html` (and computes the proposalId). |
+| `proposal_01.html` | Self-contained annotated breakdown: copy-paste `propose()` arrays, decoded selectors/args/addresses, collapsible nested calls, raw calldata per entry, proposalId. |
+
+## Regenerate (only if addresses/description/params change)
+
+```bash
+forge script scripts/proposals/proposal_01/Proposal01FeeActivation.s.sol:Proposal01FeeActivation > /tmp/run.txt
+# re-extract calldata.json from the run output, then:
+node scripts/proposals/proposal_01/annotate.js
+```
 
 ## ⚠ Pre-execution requirement — Arbitrum funding
 
