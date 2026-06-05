@@ -69,7 +69,7 @@ contract Proposal01FeeActivationTest is Test, Proposal01Builder {
     ///      full-governance-lifecycle tests.
     function _assertEndState() internal view {
         IMechMarketplace mm = IMechMarketplace(MM_MAINNET);
-        assertEq(mm.fee(), NEW_FEE, "L1 fee not set to 5%");
+        assertEq(mm.fee(), NEW_FEE, "L1 fee not set to 15%");
         assertEq(mm.minResponseTimeout(), MIN_RESPONSE_TIMEOUT, "L1 min timeout drifted");
         assertEq(mm.maxResponseTimeout(), MAX_RESPONSE_TIMEOUT, "L1 max timeout drifted");
         // Bridged entries: destination-chain effects are not observable on a mainnet fork; correctness of

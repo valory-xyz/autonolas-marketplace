@@ -14,7 +14,7 @@
   "drainerAddress": "0xfAd04813BffD759a308A2BEaAcEf587720ba743F",
   "wrappedNativeTokenAddress": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   "usdcAddress": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-  "fee": "0",
+  "fee": "1500",
   "minResponseTimeout": "60",
   "maxResponseTimeout": "300",
   "karmaAddress": "0xB01B4154047e51F01b22017079367341ea73d744",

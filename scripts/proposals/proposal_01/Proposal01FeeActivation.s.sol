@@ -17,11 +17,11 @@ import {Script, console2} from "forge-std/Script.sol";
 ///      call below is executed BY the Timelock (0x3C1fF68f5aa342D296d4DEe4Bb1cACCA912D95fE on L1).
 ///      All addresses were verified on-chain against scripts/deployment/globals_*_mainnet.json + live `owner()`.
 ///
-///      newFee = 500 (5%) per MAX_FEE_FACTOR = 10_000 in MechMarketplace.sol. minResponseTimeout=60,
+///      newFee = 1500 (15%) per MAX_FEE_FACTOR = 10_000 in MechMarketplace.sol. minResponseTimeout=60,
 ///      maxResponseTimeout=300 echo the current live values (mandatory: the setter overwrites all three).
 abstract contract Proposal01Builder {
     // ---- Marketplace params ----
-    uint256 internal constant NEW_FEE                 = 500;  // 5.00% (MAX_FEE_FACTOR = 10_000)
+    uint256 internal constant NEW_FEE                 = 1500; // 15.00% (MAX_FEE_FACTOR = 10_000)
     uint256 internal constant MIN_RESPONSE_TIMEOUT    = 60;   // current live value, echoed
     uint256 internal constant MAX_RESPONSE_TIMEOUT    = 300;  // current live value, echoed
 
@@ -78,7 +78,7 @@ abstract contract Proposal01Builder {
     // byte-for-byte: the proposalId (in proposal_01.html, once generated) is keccak over
     // (targets, values, calldatas, keccak(description)). Single line, no embedded newlines.
     string internal constant DESCRIPTION =
-        "MechMarketplace protocol fee activation. This proposal switches the universal MechMarketplace fee from 0 to 5% (newFee = 500, MAX_FEE_FACTOR = 10000) on every MechMarketplaceProxy deployment across the supported EVM mainnets, by calling changeMarketplaceParams(500, 60, 300) on each instance. Mode is excluded as no MechMarketplace is deployed on Mode. Ethereum is updated directly; Gnosis, Polygon, Arbitrum, Optimism, Base and Celo are updated through their respective L1->L2 bridge mediators (AMB, FxRoot, Arbitrum Inbox, and the OP-stack L1CrossDomainMessenger for Optimism/Base/Celo). The minResponseTimeout (60s) and maxResponseTimeout (300s) values are echoed unchanged. In accordance with Autonolas DAO Constitution at ipfs://bafybeibrhz6hnxsxcbv7dkzerq4chssotexb276pidzwclbytzj7m4t47u";
+        "MechMarketplace protocol fee activation. This proposal switches the universal MechMarketplace fee from 0 to 15% (newFee = 1500, MAX_FEE_FACTOR = 10000) on every MechMarketplaceProxy deployment across the supported EVM mainnets, by calling changeMarketplaceParams(1500, 60, 300) on each instance. Mode is excluded as no MechMarketplace is deployed on Mode. Ethereum is updated directly; Gnosis, Polygon, Arbitrum, Optimism, Base and Celo are updated through their respective L1->L2 bridge mediators (AMB, FxRoot, Arbitrum Inbox, and the OP-stack L1CrossDomainMessenger for Optimism/Base/Celo). The minResponseTimeout (60s) and maxResponseTimeout (300s) values are echoed unchanged. In accordance with Autonolas DAO Constitution at ipfs://bafybeibrhz6hnxsxcbv7dkzerq4chssotexb276pidzwclbytzj7m4t47u";
 
     /// @dev Builds the full fee-activation proposal.
     function buildProposal()

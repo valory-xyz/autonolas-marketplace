@@ -1,7 +1,7 @@
-# Proposal 01 — MechMarketplace fee activation (5%)
+# Proposal 01 — MechMarketplace fee activation (15%)
 
 Activates the universal MechMarketplace fee across all EVM mainnets where MechMarketplace is
-deployed by calling `changeMarketplaceParams(500, 60, 300)` on every `MechMarketplaceProxy`:
+deployed by calling `changeMarketplaceParams(1500, 60, 300)` on every `MechMarketplaceProxy`:
 
 | # | Chain | MechMarketplaceProxy | Path |
 |---|---|---|---|
@@ -15,7 +15,7 @@ deployed by calling `changeMarketplaceParams(500, 60, 300)` on every `MechMarket
 
 Mode is intentionally excluded — no MechMarketplace is deployed on Mode.
 
-`newFee = 500` corresponds to **5%** given `MAX_FEE_FACTOR = 10_000` in
+`newFee = 1500` corresponds to **15%** given `MAX_FEE_FACTOR = 10_000` in
 [`MechMarketplace.sol:88`](../../../contracts/MechMarketplace.sol). `minResponseTimeout = 60` and
 `maxResponseTimeout = 300` echo the current live values unchanged (the setter overwrites all
 three — re-asserting current values is mandatory).

@@ -22,4 +22,4 @@ Timelock `PROPOSER` role (post-proposal_11 in `autonolas-governance` this is the
 
 | # | Summary | Folder | Fork test (L1) |
 |---|---------|--------|----------------|
-| 01 | MechMarketplace fee activation — switch `fee` from 0 to 5% (`newFee = 500`) across all EVM mainnets except Mode (Ethereum direct + Gnosis / Polygon / Arbitrum / Optimism / Base / Celo via their respective L1→L2 bridges) | [proposal_01/](proposal_01) | [Proposal01FeeActivation.t.sol](../../test/proposals/Proposal01FeeActivation.t.sol) |
+| 01 | MechMarketplace fee activation — switch `fee` from 0 to 15% (`newFee = 1500`) across all EVM mainnets except Mode (Ethereum direct + Gnosis / Polygon / Arbitrum / Optimism / Base / Celo via their respective L1→L2 bridges) | [proposal_01/](proposal_01) | [Proposal01FeeActivation.t.sol](../../test/proposals/Proposal01FeeActivation.t.sol) |
