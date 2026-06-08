@@ -44,7 +44,17 @@ This is the only difference that matters. Everything else (HTTP shapes, SDKs, ec
 
 ## 2. Decision Matrix
 
-The right answer almost always falls out of two questions: **how many requests per client per session** and **does the client want to lock up a deposit upfront**.
+The right answer almost always falls out of two axes. Both matter.
+
+**Axis 1, throughput**. How many requests will a typical client send per session?
+- Low N (1-3): x402 wins. Channel setup overhead is wasted.
+- High N (10+): MPP session wins. Per-request gas drops to zero after open.
+
+**Axis 2, risk appetite**. Which kind of safety do we prefer?
+- **x402**: client funds are never locked, but the mech eats the tool cost if the client moves their USDC out between HTTP 200 and on-chain settle (settlement race, see Section 5 and `docs/x402_spec.md` §3.6).
+- **MPP session**: deposit is locked in escrow at `open()`, so settlement is guaranteed by construction (no race possible). The cost is a new escrow contract to audit and a deposit the client has to plan for.
+
+Put bluntly: x402 is cheaper to ship and safer for clients. MPP is more efficient at volume and safer for mechs. The matrix below maps common client profiles onto these two axes.
 
 | Client profile | Recommended |
 |----------------|-------------|
@@ -182,6 +192,21 @@ x402scan and the Coinbase Bazaar index every x402 service automatically (via dir
 MPPscan has ~226 services. Lower visibility. Agents looking for paid APIs today are not finding their results on MPPscan.
 
 This may flip in the long run, but for v1 the agent ecosystem is on x402.
+
+### Failure mode side-by-side
+
+Synthesis of the trade-offs above. Each cell is grounded in the source specs; references in parentheses point to the relevant section.
+
+| Failure mode | x402 | MPP session |
+|---|---|---|
+| Client moves USDC out before on-chain settle | YES, mech eats tool cost per request, bounded by `maxDeliveryRate` (`x402_spec.md` §3.6) | NO, deposit locked in escrow at `open()` (`mpp_session_spec.md` §3.9 failure mode 1) |
+| Client signs malformed auth or voucher | Reverts atomically at settle (`x402_spec.md` §3.3) | Reverts atomically at settle (`mpp_session_spec.md` §3.2) |
+| Mech griefs the client (consumes auth without delivering) | Bounded by `maxDeliveryRate` per request | Bounded by `maxDeposit` per channel |
+| Client disappears mid-session | No funds locked, no recovery needed | Funds locked until client calls `forceClose` after `CLOSE_TIMEOUT` (24h) (`mpp_session_spec.md` §3.1, §8) |
+| Cross-mech replay of auth or voucher | Blocked: `requestId` includes the calling mech (`x402_spec.md` §3.7) | Blocked: same `requestId` binding plus `salt = keccak256(mechAddress)` convention (`mpp_session_spec.md` §8) |
+| Per-request gas cost to the mech | Linear in N: each request needs its own `transferWithAuthorization` (~50k gas, `x402_spec.md` §3.3) | Constant after open: off-chain vouchers, batched settle (`mpp_session_spec.md` §3.7) |
+
+The asymmetry is real: x402 protects the client from lock-in, MPP protects the mech from settlement loss. Neither is strictly safer; they trade different risks.
 
 ---
 
