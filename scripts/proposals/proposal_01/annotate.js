@@ -197,7 +197,10 @@ function computeProposalId(targets, values, calldatas, description) {
 function main() {
     const jsonPath = process.argv[2] || path.join(__dirname, "calldata.json");
     const entries = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
-    const description = fs.readFileSync(path.join(__dirname, "description.txt"), "utf8").replace(/\n$/, "");
+    // description.txt is canonical: no trailing newline (so keccak256(raw_bytes) matches the on-chain
+    // proposalId without any normalisation step). Any reintroduction of a trailing newline shifts
+    // the proposalId and will be caught by the assertions below.
+    const description = fs.readFileSync(path.join(__dirname, "description.txt"), "utf8");
     const targets = entries.map((e) => e.target);
     const values = entries.map((e) => e.value);
     const calldatas = entries.map((e) => e.calldata);
