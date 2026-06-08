@@ -110,7 +110,7 @@ This matches the structure used by `wildcard/server/src/session/voucher.py` so t
 
 ### 3.2 BalanceTrackerMppSession, the override
 
-`BalanceTrackerMppSession` extends `BalanceTrackerFixedPriceToken` and overrides only `_adjustInitialBalance`. It is intentionally thin: it trusts `MppEscrow` to be authoritative about voucher correctness, and only checks that the expected delta arrived.
+`BalanceTrackerMppSession` extends `BalanceTrackerFixedPriceToken`. It overrides `_adjustInitialBalance` and exposes one additional external function (`closeChannel`). It is intentionally thin: it trusts `MppEscrow` to be authoritative about voucher correctness, and only checks that the expected delta arrived.
 
 **Logic**:
 
@@ -151,6 +151,24 @@ function _adjustInitialBalance(
 - `received >= deliveryRate` is the safety net: if the escrow somehow transferred less than expected, we abort. Belt-and-braces against future escrow upgrades.
 - Existing payment families are unaffected because the override only runs when registered against `keccak256("MPP_SESSION_USDC")`.
 
+**`closeChannel` entry point**:
+
+The escrow's `close()` is callable only by the channel's `payee` (= this BalanceTracker). So the BalanceTracker must expose its own entry to forward the call. Suggested shape:
+
+```solidity
+function closeChannel(bytes32 channelId, uint128 cumulativeAmount, bytes calldata voucherSig)
+    external
+{
+    // Access control: see open question below. v1 candidates:
+    //   (a) onlyMech: msg.sender must be a registered mech (mapAgentMechFactories[msg.sender] != 0 via marketplace check)
+    //   (b) onlyOperator-for-some-mech: msg.sender is a service multisig operating a mech for this paymentType
+    //   (c) public: anyone can call, escrow validates the signature anyway
+    mppEscrow.close(channelId, cumulativeAmount, voucherSig);
+}
+```
+
+Without this entry, deposits would never refund and channels could only be unilaterally closed by the payer after `CLOSE_TIMEOUT` via `forceClose`. The simplest secure default is (c) public: the escrow's own EIP-712 sig check is the trust boundary, and anyone with the latest signed voucher can finalize. Pick the policy intentionally in v1.
+
 ### 3.3 Three-contract pattern matches existing families
 
 The marketplace resolves the balance tracker via `mapPaymentTypeBalanceTrackers[mech.paymentType()]`. For MPP to route correctly, the same three-contract pattern used by `MechFixedPriceTokenUSDC` applies:
@@ -190,17 +208,24 @@ The escrow re-runs voucher verification on-chain. This is non-redundant because 
 
 ### 3.6 Dynamic Pricing
 
-For the initial MPP implementation, pricing matches the x402 family.
+For the initial MPP implementation, pricing matches the x402 family and inherits the same policy decision.
 
-**Fixed-price mechs**: the quote is deterministic and requires no tool execution:
+**Fee model reminder**. `BalanceTrackerBase._processPayment` (lines 144-176) takes the fee out of `mapMechBalances[mech]` at payout time, not from the client at delivery. So:
 
 ```
-quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)
+mech_received ≈ quote * (10000 - fee_bps) / 10000   (ceil-rounded on the fee)
 ```
 
-The mech queries `MechMarketplace.fee()` for fee bps and returns this quote in the HTTP 402 response body.
+Two valid quote policies follow:
 
-**NVM/dynamic-price mechs (future scope)**: on requests without payment credentials, run tool with `delivery_rate=0` to get cost estimate, then inflate by fee.
+- **Policy A, client pays the listed rate**. `quote = maxDeliveryRate`. Mech absorbs fee, keeps `maxDeliveryRate * (1 - fee_bps/10000)`.
+- **Policy B, client pays grossed-up**. `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`. Mech receives `maxDeliveryRate` net of fee.
+
+Pick one consistently with the x402 spec (`docs/x402_spec.md` Section 3.3). v1 recommendation is Policy A. The worked example in Section 5 of this document uses Policy B (quote 10200 at 2% fee) for illustration; substitute `quote = maxDeliveryRate = 10000` if Policy A is chosen.
+
+The mech queries `MechMarketplace.fee()` for fee bps and returns the quote in the HTTP 402 response body.
+
+**NVM/dynamic-price mechs (future scope)**: on requests without payment credentials, run tool with `delivery_rate=0` to get cost estimate, then apply the same policy.
 
 ### 3.7 Batch settlement semantics
 
@@ -530,9 +555,17 @@ mechMarketplace.setMechFactoryStatuses(
 
 ### 6.3 Client Side
 
-**No new client SDK is required.** The existing `mppx` library handles all client-side functionality:
+**Client SDK requires a small adaptation**, not a from-scratch build. The `mppx` library used by pearl-mini is the right starting point, but its only built-in payment method (`tempo()`) is hard-coded to Tempo's `TempoStreamChannel` on chainId 4217. To target our `MppEscrow` on Gnosis/Base/etc., one of the following is needed:
 
-- `Mppx.create({ methods: [olasChannelMethod({ account, escrow, chainId, ... })] })` (or equivalent), where `olasChannelMethod` is a thin config object pointing at our `MppEscrow` address and chain. This is the same shape as `tempo()` in `mppx/client`.
+- **Fork mppx** and add an `olas()` method (or rename / generalize `tempo()` to take chain + escrow as config). Lowest-risk for v1.
+- **Upstream PR to mppx** parameterizing `tempo()` so it can point at any chain + escrow that implements the same interface. Cleanest long-term, but depends on upstream review.
+- **Bypass mppx** and ship a thin Valory client that does voucher signing + 402 retry. Roughly mirrors what `mppx/client/Mppx.create` does internally. Smallest dependency footprint.
+
+Whichever path is chosen, the wire format and EIP-712 typed data are unchanged from the pearl-mini ↔ wildcard server setup, so the off-chain protocol is interoperable.
+
+Once the SDK is configured:
+
+- `Mppx.create({ methods: [olasMethod({ account, escrow, chainId, ... })] })` exposes a fetch-compatible client.
 - The client makes a normal `mppx.fetch(url, init)` call. On 402, mppx auto-signs the voucher and retries.
 - Channel state is managed by the client SDK; persistence is the client's responsibility (e.g. `chrome.storage.local` for browser, file or DB for backend agents).
 
@@ -570,13 +603,15 @@ Decision needed before implementation (open item, see Section 8).
 ## 8. Known Constraints
 
 - **Channel deposit required upfront**. The client must lock `deposit` USDC at channel open. This is the cost of session-mode amortization. For single-request clients, x402 is cheaper because there is no deposit.
+- **Client EOA needs native gas to open and force-close**. `MppEscrow.open()` and `MppEscrow.forceClose()` are submitted by the client EOA, so the client needs xDAI / ETH on the target chain for gas. Pearl-mini avoids this on Tempo by using Tempo's pay-gas-in-USDC.e tx type; on Gnosis or Base no equivalent exists by default. Options for v1: require clients to bring native gas (worst UX, blocks pure-USDC agents), or sponsor `open()` via ERC-4337 + a paymaster (significant additional scope, not in v1).
 - **Single token per channel**. A channel binds one ERC-20 token. Switching tokens means closing and reopening. For USDC this is not a constraint.
-- **Single mech per channel**. The channel's `payee` is the specific `BalanceTrackerMppSession` address. A client cannot reuse a channel across mechs; one channel per mech relationship. This matches pearl-mini's pattern where each prediction server has its own channel.
+- **Channel identity (channel-per-mech convention)**. The channel's `payee` is the shared `BalanceTrackerMppSession` address, not the mech itself. The `channelId` does NOT include the mech address. To avoid cumulative-amount coordination headaches when a client talks to multiple MPP mechs, the client SDK should use `salt = keccak256(abi.encode(mechAddress))` so each `(client, mech)` pair yields a distinct `channelId`. Security across mechs is enforced separately by the request signature (`getRequestId` includes `mech = msg.sender`) so the salt convention is purely an operational hygiene rule.
 - **Native token mechs not supported**. xDAI/wxDAI on Gnosis. The escrow uses `transferFrom`. wxDAI is WETH9-style and lacks the integration we want (also the same constraint that excluded native from x402). These mechs continue on their existing payment path unaffected.
 - **Authorized signer key management**. By default `authorizedSigner = payer` (the client EOA). Advanced setups can delegate signing to a separate key (useful for hot/cold wallet separation), but this adds complexity. v1 keeps `authorizedSigner = payer`.
-- **Mech operator hot key for close/settle**. The mech Safe (or a delegated key) submits `MppEscrow.settle` and `close`. This key holds zero funds beyond gas. Compromise risk is bounded.
+- **No separate hot key for the mech side**. Settlement flows through the existing mech Safe via `OlasMech.deliverMarketplaceWithSignatures` → `MechMarketplace.deliverMarketplaceWithSignatures` → `BalanceTrackerMppSession._adjustInitialBalance` → `MppEscrow.settleFrom`. The escrow's `payee`-only access on `settle()` is satisfied because the BalanceTracker is the direct caller. The mech Safe is the only signing authority required.
 - **Close timeout for unilateral close**. The escrow includes a `CLOSE_TIMEOUT` (recommended 24h) before a client can `forceClose`. This protects the mech from losing accumulated cumulative if the client tries to race-close.
 - **EIP-712 domain bound to chain and escrow**. A voucher signed for one chain's `MppEscrow` cannot be replayed on another chain (chainId in domain) or on a redeployed escrow (verifyingContract in domain).
+- **`closeChannel` access control on BalanceTrackerMppSession undecided**. See Section 3.2. Public, onlyMech, or onlyOperator are all defensible. Pin one in v1.
 - **Mech request signature (Signature 2) transport mechanism undecided**. Body parameter, custom header, or mppx context field. Same open item as the x402 spec Issue C.
 
 ---
@@ -665,8 +700,8 @@ For each combination of {pre-deposit, x402, MPP session}, verify:
 
 | Aspect | x402 (PR #148) | MPP Session (this spec) |
 |--------|-----------------|--------------------------|
-| Per-request on-chain cost | 1 transferWithAuthorization + delivery | 0 (off-chain voucher only) |
-| Batch settlement | Not possible (each EIP-3009 sig is single-use) | Native (latest voucher covers all prior) |
+| Per-request on-chain cost | 1 `transferWithAuthorization` per request (settled in batched tx, but each auth is its own settle call) | 0 (off-chain voucher only between open and settle) |
+| Batch settlement | Possible by array-encoding multiple EIP-3009 auths in `paymentData`; the marketplace overhead amortizes but each auth still pays its own settle gas. See x402 spec Section 3.3 "Batch semantics". | Native: a single voucher carries the cumulative state for all prior requests, settles in one transfer regardless of N. |
 | Token requirements | EIP-3009 USDC only | Any ERC-20 with `transferFrom` |
 | Gnosis bridged USDC | Untested, likely unsupported | Works (no EIP-3009 needed) |
 | First-call UX | Sign, retry, done | Open channel (1 tx), then sign + retry |

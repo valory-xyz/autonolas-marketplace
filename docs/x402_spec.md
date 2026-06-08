@@ -120,17 +120,24 @@ Both signatures are sent to the mech: the payment signature in the `X-Payment` h
 
 ### 3.3 Dynamic Pricing — Addressing Issue 3
 
-For the initial x402 implementation, quote generation depends on the mech type:
+For the initial x402 implementation, quote generation depends on the mech type.
 
-**Fixed-price mechs (including x402):** the quote is deterministic and requires no tool execution:
+**Important on the fee model.** The marketplace fee in `BalanceTrackerBase._processPayment` (lines 144-176) is taken out of `mapMechBalances[mech]` at payout time, not from the client at delivery time. The relationship between `value` (what the client signs in EIP-3009) and what the mech receives is:
 
 ```
-quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)
+mech_received ≈ value * (10000 - fee_bps) / 10000   (ceil-rounded on the fee)
 ```
 
-The mech queries `MechMarketplace.fee()` for fee bps and returns this quote in the HTTP 402 response body.
+Two valid quote policies follow:
 
-**NVM/dynamic-price mechs (future scope):** on requests without payment headers, run tool with `delivery_rate=0` to get cost estimate, then inflate: `quote = tool_cost + (tool_cost * fee_bps / 10000)`.
+- **Policy A, client pays the listed rate (mech absorbs fee).** `quote = maxDeliveryRate`. Client pays exactly the mech's advertised rate, the mech keeps `maxDeliveryRate * (1 - fee_bps/10000)` after the marketplace cut. Mirrors the existing pre-deposit flow where the mech absorbs the fee.
+- **Policy B, client pays grossed-up (mech receives listed rate net).** `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`. Client pays slightly more than the listed rate, the mech receives `maxDeliveryRate` after fee. Predictable revenue for mech operators, slightly more complex for client SDKs to compute.
+
+Both work. The marketplace contract does not enforce either. **This needs an explicit policy decision before implementation**, and the same decision must be applied consistently to MPP session quotes (see `docs/mpp_session_spec.md`). v1 recommendation: Policy A. It matches the existing flow and avoids the gross-up math in client SDKs.
+
+The mech queries `MechMarketplace.fee()` for fee bps and returns the resulting quote in the HTTP 402 response body. The worked example in Section 5 below uses Policy B for illustration (the 10200 figure is the grossed-up quote at 2% fee); rewrite to Policy A by setting `quote = maxDeliveryRate = 10000` if that policy is chosen.
+
+**NVM/dynamic-price mechs (future scope):** on requests without payment headers, run tool with `delivery_rate=0` to get cost estimate, then apply the same chosen policy.
 
 #### Batch semantics
 
@@ -379,8 +386,8 @@ mechMarketplace.setMechFactoryStatuses(
 - Return `X-Payment-Response` header on 200 responses with settlement status
 
 **Quote Generation**
-- For fixed-price mechs (including x402): `quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)`. No tool execution needed.
-- For NVM/dynamic mechs (future scope): run tool with `delivery_rate=0` to get cost estimate, then inflate with fee.
+- For fixed-price mechs (including x402): apply the quote policy chosen in Section 3.3 (Policy A `quote = maxDeliveryRate`, or Policy B `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`). No tool execution needed.
+- For NVM/dynamic mechs (future scope): run tool with `delivery_rate=0` to get cost estimate, then apply the same policy.
 - Query `MechMarketplace.fee()` for current fee bps.
 
 **In-Process Verification (Facilitator)**
