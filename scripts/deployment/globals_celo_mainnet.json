@@ -27,7 +27,7 @@
   "olasAddress": "0xD80533CA29fF6F033a0b55732Ed792af9Fbb381E",
   "bridgeMediatorAddress": "0xC14E191A64a7FB0e5790a8a0B9a58683dFFce04d",
   "serviceRegistryAddress": "0xE3607b00E75f6405248323A9417ff6b39B244b50",
-  "drainerAddress": "0x11949cBC85d8793B360029E26b18ae759708e28b",
+  "drainerAddress": "0x847bBE8b474e0820215f818858e23F5f5591855A",
   "wrappedNativeTokenAddress": "0x471EcE3750Da237f93B8E339c536989b8978a438",
   "usdcAddress": "0xcebA9300f2b948710d2653dD7B07f33A8B32118C",
   "fee": "0",
@@ -38,9 +38,9 @@
   "mechMarketplaceAddress": "0x1a0bFCC27051BCcDDc444578f56A4F5920e0E083",
   "mechMarketplaceProxyAddress": "0x17d96ba4532fe91809326092fE4D5606A7B7a0d8",
   "mechFactoryFixedPriceNativeAddress": "0xDd1252c5a75be568B5E6e50bA542680b38dbd68f",
-  "balanceTrackerFixedPriceNativeAddress": "0x93111f6C267068A5d7356114D61d0f09bFD53a54",
+  "balanceTrackerFixedPriceNativeAddress": "0x2E008211f34b25A7d7c102403c6C2C3B665a1abe",
   "mechFactoryFixedPriceTokenOLASAddress": "0xA123748Ce7609F507060F947b70298D0bde621E6",
   "mechFactoryFixedPriceTokenUSDCAddress": "0xE3e5Df46060370af5Fd37B2aA11e7dac3cCB4bd0",
-  "balanceTrackerFixedPriceTokenOLASAddress": "0x3912381bAa2935a0fc03c173Df366A459DAc1F43",
-  "balanceTrackerFixedPriceTokenUSDCAddress": "0xA749f605D93B3efcc207C54270d83C6E8fa70fF8"
+  "balanceTrackerFixedPriceTokenOLASAddress": "0xB3921F8D8215603f0Bd521341Ac45eA8f2d274c1",
+  "balanceTrackerFixedPriceTokenUSDCAddress": "0x97371B1C0cDA1D04dFc43DFb50a04645b7Bc9BEe"
 }

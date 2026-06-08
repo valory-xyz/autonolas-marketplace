@@ -463,20 +463,20 @@
         "token": "olas"
       },
       {
-        "name": "BalanceTrackerFixedPriceNative",
-        "artifact": "abis/0.8.28/BalanceTrackerFixedPriceNative.json",
-        "address": "0x93111f6C267068A5d7356114D61d0f09bFD53a54"
+        "name": "BalanceTrackerFixedPriceNativeCelo",
+        "artifact": "abis/0.8.30/BalanceTrackerFixedPriceNativeCelo.json",
+        "address": "0x2E008211f34b25A7d7c102403c6C2C3B665a1abe"
       },
       {
         "name": "BalanceTrackerFixedPriceToken",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
-        "address": "0xA749f605D93B3efcc207C54270d83C6E8fa70fF8",
+        "address": "0x97371B1C0cDA1D04dFc43DFb50a04645b7Bc9BEe",
         "token": "usdc"
       },
       {
         "name": "BalanceTrackerFixedPriceToken",
         "artifact": "abis/0.8.28/BalanceTrackerFixedPriceToken.json",
-        "address": "0x3912381bAa2935a0fc03c173Df366A459DAc1F43",
+        "address": "0xB3921F8D8215603f0Bd521341Ac45eA8f2d274c1",
         "token": "olas"
       }
     ]
