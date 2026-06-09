@@ -6,11 +6,11 @@ A three-phase plan to move mech requests off the public chain rails while keepin
 
 ## Phases at a glance
 
-| Phase | What ships | Contract changes | Effort |
-|-------|------------|------------------|--------|
-| **Phase 1** — HTTP requests, privacy via no-IPFS | Mech accepts requests over HTTPS. Content stays off public IPFS. Contracts untouched. | None | ~1500-2900 lines |
-| **Phase 2** — Centralized analytics in our existing Postgres | Mechs write predictions to the same Postgres pearl-mini already uses. Website metrics read from there. Three files change. | None | ~900 lines |
-| **Phase 3** — Optional scaling (deferred) | Cumulative voucher, multi-requester batching, fail-soft batching. Only build when volume justifies. | Yes (audit-needed) | Per-item, evaluated separately |
+| Phase | What ships | Contract changes | API changes | Effort |
+|-------|------------|------------------|-------------|--------|
+| **Phase 1** — HTTP requests, privacy via no-IPFS | Mech accepts requests over HTTPS. Content stays off public IPFS. | None | Additive only — structured 402 body, two new response headers, no body shape changes on 200, no new routes | ~2020-3420 lines |
+| **Phase 2** — Centralized analytics in our existing Postgres | Mechs write predictions to the same Postgres pearl-mini already uses. Website metrics read from there. | None | Yes — new `POST /predictions` on the wildcard server | ~900 lines |
+| **Phase 3** — Optional scaling (deferred) | Cumulative voucher, multi-requester batching, fail-soft batching. Build only when volume justifies. | Yes (audit-needed) | Yes — new marketplace function | Per-item, evaluated separately |
 
 ## Why this shape
 
@@ -29,17 +29,56 @@ We want privacy, low cost, and good analytics. Phase 1 buys privacy by stopping 
 
 ## TL;DR
 
-The mech already has an HTTP server. We extend it to take requests, stop pushing the content to IPFS, and keep the same on-chain settlement we use today. Anyone scraping IPFS finds nothing. The on-chain CID still proves what the mech delivered if anyone disputes it later.
+The mech already has an HTTP server. We change its behavior to stop pushing request/response content to public IPFS while keeping the same on-chain settlement. Plus two small additive HTTP improvements: the 402 response gets a structured body explaining what to deposit (today it's empty) and the 200 response gets a Payment-Receipt header for audit trails. Existing clients keep working without changes.
 
-## What we aim to implement
+## Tasks at a glance
 
-- Mech takes requests via HTTP instead of just on-chain
-- Mech stops pushing request and response content to IPFS
-- Mech still puts the same content hash on-chain (so disputes still work)
-- Mech-client uses the HTTP path (it already supports it, just stops pushing to IPFS)
-- mech-interact (used by Trader and other agents) gets a new branch that uses the HTTP path
-- Trader and other agents flip a config flag to use the HTTP path
-- No contract changes
+**Privacy (commit-reveal):**
+- [ ] Add an `is_offchain` flag to the mech task struct
+- [ ] Mech: skip IPFS upload of request metadata when flag is set
+- [ ] Mech: skip IPFS upload of response when flag is set
+- [ ] Mech: compute content hash locally instead of uploading
+- [ ] Mech: persist (request, response) preimages to local disk for the audit window
+- [ ] Mech-client: drop the IPFS upload step in the existing offchain path
+- [ ] Mech-client: compute the content hash locally before posting
+
+**Mech-interact offchain branch:**
+- [ ] Mech-interact: build a new offchain request behaviour (HTTP POST)
+- [ ] Mech-interact: build a new offchain response behaviour (polling)
+- [ ] Trader and other agents: add one config flag in `service.yaml`
+
+**Improved 402 challenge + receipt headers:**
+- [ ] Mech: emit `WWW-Authenticate: Payment` header on 402 responses
+- [ ] Mech: replace empty 402 body with structured JSON (scheme, payTo, currentBalance, required, depositInstructions)
+- [ ] Mech: emit `Payment-Receipt` header on 200 responses
+- [ ] Mech-client: parse the structured 402 body, surface helpful error
+- [ ] Mech-client: optional auto-deposit and retry flag (executes depositInstructions on-chain)
+- [ ] Mech-client: log the `Payment-Receipt` header for audit
+- [ ] Mech-interact: parse the structured 402 body
+- [ ] Mech-interact: build a multisend (approve + depositFor) using the existing Safe path, retry the request after deposit
+- [ ] Mech-interact: log the `Payment-Receipt` header for audit
+
+**Operations:**
+- [ ] Document the retention SLA (recommended 90 days)
+
+## API surface in Phase 1
+
+**No new HTTP routes. Body shapes on 200 are unchanged. Two additive changes to the existing routes:**
+
+| Change | Where | Backwards compatible? |
+|--------|-------|------------------------|
+| 402 response body goes from empty → structured JSON | `POST /send_signed_requests` 402 path | Yes — old clients that ignored the body still ignore it |
+| New `WWW-Authenticate: Payment` header on 402 | `POST /send_signed_requests` 402 path | Yes — old clients don't read unknown headers |
+| New `Payment-Receipt` header on 200 | `POST /send_signed_requests` 200 path | Yes — informational, can be ignored |
+
+The two existing routes stay at the same paths with the same request bodies:
+
+| Route | Used today | Used in Phase 1 |
+|-------|-----------|------------------|
+| `POST /send_signed_requests` | Yes | Yes, same request body; 402/200 responses get the new headers |
+| `GET /fetch_offchain_info` | Yes | Yes, same response shape |
+
+Anything that worked against today's HTTP API keeps working in Phase 1. New clients can use the structured 402 body for auto-deposit retries.
 
 ## Flow
 
@@ -49,22 +88,44 @@ The mech already has an HTTP server. We extend it to take requests, stop pushing
        │  1. Build request locally
        │     (compute the IPFS hash on the fly, don't upload)
        ▼
-   POST /predict over HTTPS  ────────────────────▶  Mech HTTP server
+   POST /send_signed_requests  ─────────────────▶  Mech HTTP server
                                                        │
                                                        │  2. Check sender has balance
-                                                       │     on-chain
+                                                       │     on-chain (existing logic)
                                                        │
-                                                       │  3. Queue the task
-                                                       │     (response stored in memory)
+              ┌─── if insufficient ─────────────┐
+              │                                 │
+              │       ◀ HTTP 402 Payment Required
+              │       ◀   WWW-Authenticate: Payment scheme="olas-prepay"
+              │       ◀ Body: { scheme, payTo, currentBalance,
+              │       ◀         required, depositInstructions }
+              │                                 │
+              │  Client parses the body,        │
+              │  optionally auto-deposits       │
+              │  on-chain, then retries         │
+              │  from step 1                    │
+              │                                 │
+              └─── else (sufficient) ──────────┘
                                                        │
-                                                       │  4. Run the tool
+                                                       │  3. Queue the task,
+                                                       │     skip the IPFS upload
+                                                       │
+                                                       │  4. Run the tool,
+                                                       │     keep result in memory
+                                                       │
+                                                       │  5. Persist (request, response)
+                                                       │     preimages to local disk
                                                        ▼
-   GET /fetch_offchain_info  ◀───────────────────  result available
+                                              ◀ HTTP 200 OK
+                                              ◀   Payment-Receipt: <base64 receipt>
+                                              ◀ Body: { request_id }
                                                        │
-                                                       │  5. Batch-settle on-chain
+   GET /fetch_offchain_info  ◀─────────────────  result available
+                                                       │
+                                                       │  6. Batch-settle on-chain
                                                        │     (same path as today,
-                                                       │     just with the locally
-                                                       │     computed hash, no IPFS upload)
+                                                       │      with the locally
+                                                       │      computed hash, no upload)
                                                        ▼
                                               MechMarketplace.deliverMarketplaceWithSignatures
                                                        │
@@ -74,68 +135,169 @@ The mech already has an HTTP server. We extend it to take requests, stop pushing
                                                        │  not on IPFS
                                                        ▼
 
-If someone disputes a delivery later:
-   Mech reveals the saved request/response
+If someone disputes later:
+   Mech reads preimages from local disk
+   Pins them to IPFS
    The hash still matches the on-chain commitment
    Anyone can verify
 ```
 
 ## Why this gives us privacy without new crypto
 
-A content hash is a one-way function. If we put the hash on-chain but never publish the content anywhere, scrapers see only the hash. They can't get the content. But the hash is still bound to specific content. If the mech later tries to lie about what was asked or delivered, anyone with the original content can re-hash it and prove the lie. So the mech is honesty-locked even though the content is private.
+A content hash is a one-way function. If we put the hash on-chain but never publish the content anywhere, scrapers see only the hash. They can't get the content. But the hash is still bound to specific content. If the mech later tries to lie about what was asked or delivered, anyone with the original content can re-hash it and prove the lie. The mech is honesty-locked even though the content is private.
 
 ## Detailed implementation
 
-### What changes in the mech (server side)
+### Mech-side changes (server)
 
-In `mech/packages/valory/skills/task_execution/handlers.py`:
+**Steps**
 
-- Add a flag `is_offchain` on the task struct
-- When the flag is set:
-  - Skip the IPFS upload of the request metadata
-  - Skip the IPFS upload of the response
-  - Keep the response in memory so the `/fetch_offchain_info` route can return it
-- When the mech submits the on-chain settlement at the end of the batch:
-  - Compute the IPFS hash locally using the same hashing library IPFS uses
-  - Put that hash on-chain (so the on-chain record is still content-bound)
-  - But don't upload anywhere
-- Retain the original request and response bytes in a local on-disk store for the audit window
+Privacy (commit-reveal):
+- [ ] Add `is_offchain` boolean to the task struct queued by `_enqueue_offchain_request`
+- [ ] In `_execute_ipfs_tasks`: branch on the flag; skip the IPFS metadata upload, store the JSON in a new `in_memory_requests` dict keyed by request_id
+- [ ] In the response build path: skip the IPFS upload, keep the response in `offchain_request_responses` (already exists for the GET endpoint)
+- [ ] In `_get_offchain_tasks_deliver_data`: compute the locally-derived IPFS hash and pass it through as `delivery_data` (decision pending — recommendation is the hash for verifiability)
+- [ ] Add a local persistence layer (e.g. SQLite or LevelDB) for (request_id, request_bytes, response_bytes, accepted_at) tuples
+- [ ] Background job: prune entries older than the retention window
 
-Effort: ~50 lines of code + ~150 lines of tests.
+Improved 402 challenge:
+- [ ] Build a `build_402_challenge` helper that produces the structured body: `{scheme, payTo, asset, chainId, currentBalance, required, depositInstructions, error}`
+- [ ] In the insufficient-balance branch of `_handle_signed_requests`: emit `WWW-Authenticate: Payment scheme="olas-prepay" realm="<mech_address>"` header and the structured body
+- [ ] `depositInstructions` should reference the BalanceTracker address and `depositFor(address, amount)` ABI
 
-### What changes in mech-client
+Payment-Receipt header:
+- [ ] On 200 from `_handle_signed_requests`: emit `Payment-Receipt: <base64 JSON>` with `{request_id, accepted_at, accepted_amount, settlement_status: "pending"}`
 
-In `mech-client/mech_client/services/marketplace_service.py`:
+Tests:
+- [ ] Assert no IPFS calls happen on the offchain path
+- [ ] Assert local store gets populated
+- [ ] Assert the on-chain settlement still goes through
+- [ ] Assert 402 body matches schema and the WWW-Authenticate header is present
+- [ ] Assert Payment-Receipt header is present on 200 with valid base64-encoded JSON
+- [ ] Assert existing clients (no header awareness) still parse the 200 body correctly
 
-- The HTTP path already exists (`--use-offchain` flag, line 69 of `request_cmd.py`)
-- Today it still uploads the request metadata to IPFS as part of the request build
-- Remove that upload. Build the JSON locally. Compute the hash locally. Send the JSON inline in the HTTP body.
+**Where**
 
-Effort: ~30 lines of code + ~50 lines of tests.
+- `mech/packages/valory/skills/task_execution/handlers.py`
+- `mech/packages/valory/skills/task_execution/behaviours.py`
+- `mech/packages/valory/skills/task_submission_abci/behaviours.py`
 
-### What changes in mech-interact (the big work)
+**Effort**
 
-`mech-interact` is the library Trader, Market-Creator, Meme-OoOrr, IEKit, and other autonomous agents use to talk to mechs. Today it only knows how to submit requests on-chain. We add a parallel HTTP branch:
+~100 source + ~250 test lines.
 
-- New `MechOffchainRequestBehaviour`: builds the request body, signs the request id with the agent's Safe key, POSTs to the mech's HTTP endpoint
-- New `MechOffchainResponseBehaviour`: polls the mech's `/fetch_offchain_info` endpoint until the result is ready or the timeout hits. On timeout, falls back to the next priority mech (privacy regression: same content goes to another mech).
-- Same wire format mech-client already uses.
+### Mech-client changes
 
-This is the biggest single piece of Phase 1. Estimate: ~800-1300 lines of code + ~400-1300 lines of tests.
+**Steps**
 
-### What changes in our agents (Trader, etc.)
+Privacy (commit-reveal):
+- [ ] In `_send_offchain_request`: skip the call to `fetch_ipfs_hash`
+- [ ] Build the request metadata JSON locally (`prompt`, `tool`, `nonce`, extras)
+- [ ] Compute the content hash locally using the same hashing library IPFS uses (so the format matches a real IPFS CID)
+- [ ] Send the JSON inline in the existing `ipfs_data` body field
 
-One line of config in each service's `service.yaml`:
+Structured 402 handling:
+- [ ] On HTTP 402: check for `WWW-Authenticate: Payment` header
+- [ ] Parse the structured body, expose fields as `InsufficientBalanceError(current_balance, required, deposit_instructions)`
+- [ ] Add `auto_deposit=True/False` parameter on the offchain entry point
+- [ ] When `auto_deposit` is enabled: execute the deposit on-chain (via the existing wallet hookup), wait for confirmation, then retry the request (with a retry-count guard, default 1 retry)
 
-```yaml
-use_offchain: ${USE_OFFCHAIN:bool:true}
-```
+Payment-Receipt logging:
+- [ ] On HTTP 200: read `Payment-Receipt` header if present
+- [ ] Log it (info level) for debug / audit visibility
+- [ ] Optionally surface in the return value
 
-No other code changes. Agents that haven't migrated keep using the on-chain path. Migrate when ready.
+Tests:
+- [ ] Assert no IPFS upload happens
+- [ ] Assert the hash in the body still parses as a CID
+- [ ] Mock a 402 with structured body, assert `InsufficientBalanceError` carries the expected fields
+- [ ] Mock a 402 then a 200, with `auto_deposit=True`, assert the deposit call happens and retry succeeds
+- [ ] Mock a 200 with `Payment-Receipt`, assert it gets logged
+
+**Where**
+
+- `mech-client/mech_client/services/marketplace_service.py`
+
+**Effort**
+
+~90 source + ~150 test lines.
+
+### Mech-interact changes (the dominant cost)
+
+`mech-interact` today only knows the on-chain flow. We add a parallel HTTP branch.
+
+**Steps**
+
+Core offchain branch:
+- [ ] Add `OffchainMechRequestBehaviour`: build the POST body with `request_id`, `sender`, `signature`, `ipfs_hash` (locally computed), `ipfs_data` (inline JSON), `delivery_rate`
+- [ ] Use the safe key to sign the `request_id`
+- [ ] Send the POST to the mech's HTTP endpoint using the existing AEA HTTP connection
+- [ ] Add `OffchainMechResponseBehaviour`: poll `GET /fetch_offchain_info` until the result is ready or the timeout expires
+- [ ] On timeout: fall back to the next priority mech (privacy note: same content goes to a second mech)
+- [ ] Wire up the new behaviours into the round/state machine
+- [ ] Skill.yaml param: `mech_http_url` (auto-discoverable from on-chain metadata or explicit)
+
+Structured 402 handling + auto-deposit:
+- [ ] On HTTP 402: check for `WWW-Authenticate: Payment` header and parse the structured body
+- [ ] Build a multisend transaction via the existing Safe path: `USDC.approve(BalanceTracker, amount)` + `BalanceTracker.depositFor(safe, amount)`
+- [ ] Submit through the existing transaction settlement skill
+- [ ] Once deposit is confirmed on-chain, loop back and re-send the offchain request
+- [ ] Add a retry-count guard (default 1) to prevent infinite loops
+- [ ] If the Safe has insufficient free balance to fund the deposit: abort with a clear error
+
+Payment-Receipt logging:
+- [ ] On HTTP 200: read `Payment-Receipt` header
+- [ ] Log it through the standard agent logger
+- [ ] Optionally write it to synchronized_data for ensemble visibility
+
+Tests:
+- [ ] Mirror the existing `test_request_behaviour.py` and `test_response_behaviour.py` patterns
+- [ ] Mock a 402 with structured body, assert the multisend gets built with correct parameters
+- [ ] End-to-end: 402 → deposit → retry → 200, assert all steps fire
+- [ ] Assert retry guard blocks more than the configured retries
+
+**Where**
+
+- New: `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/offchain_request.py`
+- New: `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/offchain_response.py`
+- Minor edits to: `base.py`, `round_behaviour.py`, `states/base.py`, `payloads.py`, `models.py`
+
+**Effort**
+
+~900-1450 source + ~550-1450 test lines.
+
+### Agent / library config changes
+
+**Steps**
+
+- [ ] In each consuming service's `service.yaml`, add `use_offchain: ${USE_OFFCHAIN:bool:true}`
+- [ ] Confirm there's a feature flag fallback so we can roll back per-deployment if needed
+- [ ] No code changes outside the flag
+
+**Where**
+
+- `trader/.../service.yaml`
+- `market-creator/.../service.yaml`
+- `meme-ooorr/.../service.yaml`
+- `iekit/.../service.yaml`
+- Any other repos that consume mech-interact
+
+**Effort**
+
+~5 lines per service.
 
 ### Mech operator retention SLA
 
-New responsibility: every operator must keep request and response content on local disk for the audit window. Recommended window: 30 days minimum. Decision pending on whether 30, 90, or longer.
+**Steps**
+
+- [ ] Pick the retention window (recommendation: 90 days)
+- [ ] Specify durability target (backup frequency, replication policy)
+- [ ] Document in the operator runbook
+- [ ] Add a monitoring alarm for "preimage store at risk of losing data within window"
+
+**Effort**
+
+Operations work, no code estimate.
 
 ### Phase 1 contract changes
 
@@ -149,7 +311,17 @@ Zero. The existing `deliverMarketplaceWithSignatures` already accepts arbitrary 
 
 ### Phase 1 effort total
 
-Around 1500-2900 lines across mech, mech-client, mech-interact, and agent config. Dominated by the new mech-interact behaviour.
+Around 2020-3420 lines across mech, mech-client, mech-interact, and agent config. Dominated by the new mech-interact behaviour. Roughly +520 lines on top of the privacy-only baseline for the structured 402 + Payment-Receipt header additions.
+
+Breakdown:
+
+| Layer | Privacy core | + 402/Receipt additions | Total |
+|-------|--------------|--------------------------|-------|
+| Mech (server) | ~200 | ~150 | ~350 |
+| Mech-client | ~80 | ~160 | ~240 |
+| Mech-interact | ~1200-2600 | ~250 | ~1450-2850 |
+| Trader / agent config | ~5 | 0 | ~5 |
+| **Total** | **~1485-2885** | **~560** | **~2045-3445** |
 
 ---
 
@@ -157,18 +329,32 @@ Around 1500-2900 lines across mech, mech-client, mech-interact, and agent config
 
 ## TL;DR
 
-Pearl-mini already writes prediction records to a Postgres database. We extend that database with a new column for mechs, have mechs write to it, and rewrite three website files to read from it instead of the marketplace subgraph. No resolution backfill, no extra workers — Omen and Polymarket subgraphs already carry resolution data and we keep using them.
+Pearl-mini already writes prediction records to a Postgres database. We extend that database with three small columns for mechs, have mechs write to it via a new HTTP endpoint, and rewrite three website files to read from it instead of the marketplace subgraph. No resolution backfill — Omen and Polymarket subgraphs already carry resolution data and we keep using them.
 
-## What we aim to implement
+## Tasks at a glance
 
-- Add three small columns to the existing predictions table
-- Add an HTTP endpoint on the wildcard server (the same server pearl-mini uses) so mechs can write predictions
-- Mech calls that endpoint each time it accepts and completes a request
-- Per-mech rate limits on the write endpoint
-- Update three website metric files (tool accuracy, omenstrat ROI, polystrat ROI) to read from Postgres instead of marketplace subgraph
-- Four other metric files unchanged
-- No new resolution backfill worker (Omen and Polymarket subgraphs already provide this)
-- Historical backfill from the marketplace subgraph: recommended, not required
+- [ ] Add `mech_offchain` to the `source` CHECK constraint on the `predictions` table
+- [ ] Add `mech_address TEXT NULL` column (with partial index)
+- [ ] Add `chain_id INTEGER NULL` column
+- [ ] Build a new `POST /predictions` endpoint on the wildcard FastAPI server
+- [ ] Add per-operator API key auth on that endpoint
+- [ ] Add per-operator rate limit (recommended 100 writes/sec/op)
+- [ ] Add the mech-side write client (called on accept, on complete, on fail)
+- [ ] Rewrite `tool-accuracy.ts` to read predictions from Postgres
+- [ ] Rewrite `omenstrat-roi.ts` to join by `market_id` instead of fuzzy question matching
+- [ ] Rewrite `polystrat-roi.ts` same way
+- [ ] Run the one-time historical backfill from the marketplace subgraph (recommended, not required)
+- [ ] Document the `prompt_used` storage policy (auth-gated, not public)
+
+## What's new in the API surface for Phase 2
+
+One new endpoint on the wildcard server:
+
+| Endpoint | Purpose | Auth |
+|----------|---------|------|
+| `POST /predictions` (new) | Mech writes a prediction row | Per-operator API key |
+
+Existing endpoints on the wildcard server are unchanged. The mech's own HTTP routes from Phase 1 stay unchanged.
 
 ## Flow
 
@@ -194,7 +380,7 @@ Pearl-mini already writes prediction records to a Postgres database. We extend t
                   │ POST /predictions   │                       │ olas-website cron  │
                   │ on the wildcard     │                       │                    │
                   │ FastAPI server      │                       │ reads predictions  │
-                  │ (new endpoint)      │                       │ from Postgres      │
+                  │ (NEW endpoint)      │                       │ from Postgres      │
                   └───────────▲─────────┘                       │                    │
                               │                                 │ reads bets +       │
                               │ HTTPS                           │ resolutions from   │
@@ -213,169 +399,107 @@ They already carry every resolution we need.
 
 ## Why no resolution backfill
 
-The Omen subgraph returns `currentAnswer` on every bet. The Polymarket subgraph returns `winningIndex` on every question. Today's tool-accuracy code already reads these directly from the bet objects. We just keep that part. The predictions table doesn't need to know about resolutions at all — the website joins predictions (from Postgres) with bets+resolutions (from subgraphs) at query time.
+The Omen subgraph returns `currentAnswer` on every bet. The Polymarket subgraph returns `winningIndex` on every question. The website's tool-accuracy code already reads these directly from the bet objects. The wildcard `resolutions` table exists for a different workflow (training data ETL) and doesn't need to be populated for our analytics.
 
 ## Detailed implementation
 
 ### Postgres schema additions
 
-Three changes to the existing predictions table:
+**Steps**
 
-```sql
--- Allow a new source value for mech-written rows
-ALTER TABLE predictions DROP CONSTRAINT predictions_source_check;
-ALTER TABLE predictions ADD CONSTRAINT predictions_source_check
-    CHECK (source IN ('wildcard', 'parquet_historical', 'mech_offchain'));
+- [ ] Write a new alembic migration that drops and re-adds the source CHECK constraint with `mech_offchain` allowed
+- [ ] In the same migration, add `mech_address TEXT NULL`
+- [ ] Create a partial index `predictions_mech_address_idx ON predictions (mech_address) WHERE mech_address IS NOT NULL`
+- [ ] Add `chain_id INTEGER NULL`
+- [ ] Run the migration in staging, then production
 
--- Which mech served this request (NULL for non-mech rows)
-ALTER TABLE predictions ADD COLUMN mech_address TEXT;
-CREATE INDEX predictions_mech_address_idx ON predictions (mech_address)
-    WHERE mech_address IS NOT NULL;
+**Where**
 
--- Which chain (Gnosis, Polygon, Base, etc.)
-ALTER TABLE predictions ADD COLUMN chain_id INTEGER;
-```
+- `wildcard/server/alembic/versions/00X_mech_offchain_columns.py`
 
-Twenty lines of migration. All other columns already exist and serve our needs.
+**Effort**
 
-### The mech write endpoint
+~20 lines of migration code.
 
-A new HTTP route on the wildcard FastAPI server:
+### Wildcard server: POST /predictions endpoint
 
-```
-POST /predictions
-Authorization: Bearer <mech-operator-api-key>
+**Steps**
 
-Body:
-{
-  "request_id": "0x...",
-  "status": "processing" | "complete" | "failed",
-  "tool_name": "openai-gpt-4",
-  "tool_version": "0x...",        // local IPFS hash of the tool code
-  "model_requested": "...",
-  "model": "...",
-  "cost": "10200",                // atomic units, matches delivery rate
-  "question_text": "...",
-  "outcomes": ["Yes", "No"],
-  "market_id": "0x...",
-  "market_url": "https://...",
-  "market_close_at": "2026-...",
-  "p_yes": 0.62,
-  "p_no": 0.38,
-  "confidence": 0.83,
-  "prompt_used": "...",           // stored (auth-gated, not public)
-  "user_wallet": null,            // for mech rows: null
-  "agent_safe": "0x...",          // the bettor identity
-  "platform": "omen" | "polymarket",
-  "source": "mech_offchain",
-  "mech_address": "0x...",
-  "chain_id": 100,
-  "predicted_at": "2026-...",
-  "latency_s": 1.2
-}
-```
+- [ ] Define a Pydantic schema matching the predictions table shape (request_id, status, tool_name, market_id, p_yes, p_no, ...) with `mech_address` and `chain_id` required, `source` enforced to `mech_offchain`
+- [ ] Implement the endpoint as upsert by `request_id` (so the on-accept call and on-complete call can both target the same row)
+- [ ] Add validation: `mech_address` must match the authenticated operator's API key
+- [ ] Return 200 on success, 400 on validation error, 401 on auth failure, 429 on rate limit, 500 on DB error
+- [ ] Add structured logging
+- [ ] Tests: roundtrip insert, upsert, validation rejection, auth rejection, rate-limit rejection
 
-The endpoint:
-- Verifies the API key
-- Checks the mech_address in the body matches the key holder
-- Applies per-operator rate limiting (recommended: 100 requests/second/operator initial, tune from logs)
-- Inserts or updates the predictions row by request_id
-- Returns 200 on success, 4xx on validation, 5xx on DB error
+**Where**
 
-Effort: ~150 lines on the wildcard server.
+- `wildcard/server/src/routes/predictions.py` (new)
+- `wildcard/server/src/store.py` (extend for upsert by request_id)
 
-### The mech write client (inside the mech)
+**Effort**
 
-When the mech accepts a request (Phase 1 step 3 in the flow above):
+~150 source + ~200 test lines.
 
-```
-POST /predictions with status="processing", tool_name, market_id, prompt_used, ...
-```
+### Mech-side write client
 
-When the mech finishes the tool execution:
+**Steps**
 
-```
-POST /predictions with same request_id, status="complete", p_yes, p_no, confidence,
-                       predicted_at, latency_s
-```
+- [ ] Add an HTTP client that calls `POST /predictions` with retry + backoff
+- [ ] On task acceptance: write row with `status='processing'`, tool_name, market_id, prompt_used, agent_safe, platform, chain_id, mech_address
+- [ ] On task completion: upsert with `status='complete'`, p_yes, p_no, confidence, predicted_at, latency_s
+- [ ] On task failure: upsert with `status='failed'`, error
+- [ ] On write failure: queue the payload to a local replay buffer and retry on a schedule (mech does NOT refuse the request)
+- [ ] Tests: assert one write on accept, one write on complete; assert replay buffer drains; assert request still succeeds when Postgres is down
 
-If the tool fails:
+**Where**
 
-```
-POST /predictions with status="failed", error message
-```
+- `mech/packages/valory/skills/task_execution/behaviours.py` (hook into accept / complete / fail paths)
+- New helper module for the write client
 
-Three calls per request lifecycle. Async, non-blocking. If the Postgres call fails (network blip, server down), the mech queues the write locally and replays. Mech doesn't refuse a request because Postgres is down.
+**Effort**
 
-Effort: ~150 lines of mech-side code.
+~150 source + ~200 test lines.
 
 ### Authentication and rate limits
 
-- Each mech operator gets a unique API key tied to their `mech_address`
-- Standard FastAPI auth middleware on `POST /predictions`
-- Rate limit: per-API-key, sliding window
-- Recommended initial limit: 100 writes/second per operator (covers high traffic mechs with headroom). Tune from monitoring.
+**Steps**
 
-Effort: ~50 lines on the wildcard server.
+- [ ] Add API key issuance UX (a manual ops command initially; can automate later)
+- [ ] Store API keys hashed in a new `mech_operator_keys` table (operator address, hashed key, created_at)
+- [ ] Add FastAPI auth middleware on `POST /predictions`
+- [ ] Add per-key sliding-window rate limit (recommended 100 writes/second/operator)
+- [ ] Tests: invalid key rejected, key for wrong mech_address rejected, burst over limit returns 429
 
-### The website metric rewrites
+**Where**
 
-Three files change.
+- `wildcard/server/src/auth/mech_keys.py` (new)
+- Migration: `mech_operator_keys` table
 
-#### tool-accuracy.ts
+**Effort**
 
-Today: queries the marketplace subgraph for `parsedRequest.tool` and `parsedRequest.questionTitle`, then fuzzy-matches bet questions to mech requests.
+~50 source + ~80 test lines.
 
-After Phase 2: queries Postgres for predictions directly, joins to bets by `(market_id, bettor)`. The fuzzy matching function (`matchBetToMechRequest`, lines 110-142) goes away.
+### Website metric rewrites
 
-Pseudocode:
+**Steps**
 
-```typescript
-// One SQL query to Postgres
-const predictions = await pgQuery(`
-  SELECT request_id, tool_name, market_id, agent_safe, platform
-  FROM predictions
-  WHERE source = 'mech_offchain'
-    AND status = 'complete'
-    AND predicted_at > $1
-`, [sinceTimestamp]);
+- [ ] Add a Postgres client to `olas-website` (likely already available since pearl-mini uses Postgres)
+- [ ] Rewrite `tool-accuracy.ts` to query Postgres for predictions and drop `matchBetToMechRequest` entirely
+- [ ] Rewrite `omenstrat-roi.ts` to join by exact `market_id` against Postgres
+- [ ] Rewrite `polystrat-roi.ts` same way
+- [ ] Update snapshot output shape if needed (keep the same `ToolAccuracyStat` interface so consumers don't change)
+- [ ] Tests: assert snapshot output matches today's shape, assert mech_offchain rows feed into the right Omen / Polymarket buckets via `platform` column
 
-// Existing bet fetch from Omen subgraph (unchanged)
-const bets = await fetchResolvedBets();
+**Where**
 
-// Index predictions for fast lookup
-const predIndex = new Map();
-for (const p of predictions) {
-  predIndex.set(`${p.platform}|${p.market_id}|${p.agent_safe.toLowerCase()}`, p);
-}
+- `olas-website/common-util/api/predict/tool-accuracy.ts`
+- `olas-website/common-util/api/predict/omenstrat-roi.ts`
+- `olas-website/common-util/api/predict/polystrat-roi.ts`
 
-// For each bet, look up the prediction and check correctness
-for (const bet of bets) {
-  const key = `omen|${bet.fixedProductMarketMaker.id}|${bet.bettor.id.toLowerCase()}`;
-  const pred = predIndex.get(key);
-  if (!pred) continue;
-  const correct = Number(bet.fixedProductMarketMaker.currentAnswer) === Number(bet.outcomeIndex);
-  bumpStats(pred.tool_name, correct);
-}
-```
+**Effort**
 
-Same shape for the Polymarket version, with `platform = 'polymarket'` and `winningIndex` instead of `currentAnswer`.
-
-Effort: ~80 lines, mostly deletions. The file gets shorter.
-
-#### omenstrat-roi.ts
-
-Today: matches mech requests to open markets by fuzzy `parsedRequest.questionTitle` (line 228).
-
-After: exact join on `market_id`. The open-market list still comes from the Omen subgraph; the mech-request side comes from Postgres.
-
-Effort: ~30 lines.
-
-#### polystrat-roi.ts
-
-Same change as omenstrat-roi.ts but for the Polymarket version.
-
-Effort: ~30 lines.
+~80 + ~30 + ~30 = ~140 source + ~200 test lines.
 
 ### Files that don't change
 
@@ -384,7 +508,7 @@ Effort: ~30 lines.
 - `polystrat-success-rate.ts` — uses Polymarket bets only
 - `index.ts` — uses registry / staking subgraphs only
 
-### The prompt_used column
+### The `prompt_used` column policy
 
 We store the full prompt. The Postgres is internal infrastructure, not public. Anyone querying it is authenticated. This matches how wildcard already handles pearl-mini's prompts. The on-chain commit-reveal property still holds for the public surface.
 
@@ -392,35 +516,42 @@ If anyone wants stricter privacy later, switch this column to a hash. Not blocki
 
 ### Historical backfill (recommendation, not requirement)
 
-Today's marketplace subgraph still has rich `parsedRequest` data for all the on-chain mech traffic that used public IPFS. To preserve continuity in the tool accuracy and ROI metrics, we recommend a one-time backfill:
+**Steps**
 
-- Read all historical Request and Delivery events from the marketplace subgraph
-- For each, read the `parsedRequest.tool` and `parsedRequest.questionTitle` (already populated)
-- Insert into Postgres with `source = 'parquet_historical'` and `mech_address` filled from the on-chain event sender
+- [ ] Write a one-time ETL that reads all historical Request and Delivery events from the marketplace subgraph
+- [ ] For each, read `parsedRequest.tool` and `parsedRequest.questionTitle`
+- [ ] Map subgraph sender → `agent_safe`, mech address → `mech_address`, chain → `chain_id`
+- [ ] Bulk-insert into Postgres with `source = 'parquet_historical'`
+- [ ] Verify row counts and a few sample rows
+- [ ] Remove the ETL script after the migration
 
-This is optional. If we skip it, metrics reset at migration date — the tool accuracy table for the recent window will be sparse for a few days until enough mech_offchain rows accumulate. If continuity matters for product positioning, run the backfill.
+**Where**
 
-Effort if we do it: ~300 lines (port from wildcard's parquet pipeline).
+- New: `wildcard/server/scripts/backfill_mech_historical.py`
+
+**Effort**
+
+~300 source lines, ~one engineer week.
+
+If we skip this, the tool accuracy and ROI metrics will be sparse for the first few days after migration until enough `mech_offchain` rows accumulate. Recommendation: do the backfill to preserve continuity.
 
 ### Phase 2 contract changes
 
-Zero. All adaptation is in Postgres, the wildcard server, the mech, and the website.
+Zero. All work is in Postgres, the wildcard server, the mech, and the website.
 
 ### Phase 2 effort total
 
-~910 lines, plus the optional ~300 line historical backfill.
-
 | Component | Lines |
 |-----------|-------|
-| Postgres migration (new source, mech_address, chain_id) | ~20 |
+| Postgres migration | ~20 |
 | Wildcard server POST /predictions endpoint | ~150 |
 | Mech write client | ~150 |
-| Auth + per-mech rate limits | ~50 |
-| tool-accuracy.ts rewrite | ~80 |
-| omenstrat-roi.ts rewrite | ~30 |
-| polystrat-roi.ts rewrite | ~30 |
+| Auth + per-operator rate limits | ~50 |
+| `tool-accuracy.ts` rewrite | ~80 |
+| `omenstrat-roi.ts` rewrite | ~30 |
+| `polystrat-roi.ts` rewrite | ~30 |
 | Tests | ~400 |
-| **Total** | **~910** |
+| **Total Phase 2** | **~910** |
 | Historical backfill (recommendation) | +~300 |
 
 ---
@@ -429,7 +560,18 @@ Zero. All adaptation is in Postgres, the wildcard server, the mech, and the webs
 
 ## TL;DR
 
-Three independent contract-level improvements. None of them ship by default. Each gets evaluated on its own merits when a specific volume threshold is crossed. They share the property that they need contract changes and an audit.
+Three independent contract-level improvements. None of them ship by default. Each is evaluated on its own merits when a specific volume threshold is crossed. They share the property that they need contract changes and an audit.
+
+## Tasks at a glance
+
+- [ ] Define the volume thresholds at which each item moves to "build" status
+- [ ] Identify the first concrete client that justifies starting
+- [ ] If green-lit: bundle all three items into a single audit cycle
+- [ ] Build new BalanceTracker subclass for cumulative vouchers
+- [ ] Add new marketplace function for batched, fail-soft settlement
+- [ ] Add OlasMech forwarder
+- [ ] Update mech-client and mech-interact for voucher signing
+- [ ] Audit, then mainnet rollout
 
 ## What we aim to implement (deferred)
 
@@ -462,13 +604,17 @@ Each item below moves to "build" status only when triggered. They're decoupled f
        After Phase 3 items A+B+C:   1 transaction per batch window
 ```
 
-## Why these aren't in Phase 1 or 2
-
-Each one needs a contract change, an audit, and meaningful client SDK work. The benefit only shows up at high traffic. For mechs serving a few requests per day, the per-request signature path is fine. For a mech doing thousands of requests per day from dozens of clients, the savings stack up.
-
 ## Detailed implementation (per item)
 
 ### Item A — One signature per batch
+
+**Tasks**
+
+- [ ] Define a new EIP-712 voucher type for cumulative authorization
+- [ ] Build a new BalanceTracker subclass that verifies one signature per requester at settlement
+- [ ] Add a marketplace function that accepts the voucher
+- [ ] Update mech-client and mech-interact to sign cumulative vouchers instead of per-request signatures
+- [ ] Tests + audit
 
 **The problem.** The current settlement path verifies every request's signature individually inside the smart contract. For 50 requests in a batch from one client, that's 50 signature verifications on-chain. Each one costs gas.
 
@@ -484,9 +630,15 @@ Each one needs a contract change, an audit, and meaningful client SDK work. The 
 
 Recommendation: defer until we have a concrete client (Optimus, an internal product, a partner) that hits the high-traffic range.
 
-**What it needs to build.** A new BalanceTracker subclass (~300 lines), a new marketplace function (~100 lines), client SDK changes to sign the cumulative authorization instead of per-request signatures. Plus audit time.
+**Effort.** ~300 lines BalanceTracker subclass + ~100 lines marketplace + ~200 lines client SDK + audit.
 
 ### Item B — One transaction covers all clients in a batch window
+
+**Tasks**
+
+- [ ] Extend the marketplace function from Item A to accept an array of vouchers, one per client
+- [ ] Update the mech-side batch builder to assemble per-client vouchers into a single array
+- [ ] Tests + audit
 
 **The problem.** The current settlement function takes one client per call. So if 50 different clients each made requests in the same 5-minute window, the mech submits 50 separate transactions. Each pays the same fixed overhead.
 
@@ -502,9 +654,16 @@ Recommendation: defer until we have a concrete client (Optimus, an internal prod
 
 Recommendation: ship together with Item A. They're closely coupled — the combined effect makes the whole batch one cheap transaction.
 
-**What it needs to build.** Extends the new function from Item A to accept an array. ~100-150 lines of marketplace code plus matching mech-side batch builder.
+**Effort.** ~100-150 lines of marketplace code plus matching mech-side batch builder.
 
 ### Item C — One bad request doesn't drop the others
+
+**Tasks**
+
+- [ ] Wrap each per-client settlement inside a try/catch in the new marketplace function
+- [ ] Emit a `VoucherSettlementFailed` event on the failure path
+- [ ] Tests for fail-soft behavior (one bad voucher in a batch of 50, expect 49 successes)
+- [ ] Audit pass on the try/catch surface
 
 **The problem.** Today's settlement function is atomic. If one of the 50 requests in a batch has a bad signature or some other failure, the whole transaction reverts. All 50 deliveries fail to settle. The mech has to identify the bad one off-chain, drop it, and resubmit.
 
@@ -570,6 +729,7 @@ Phase 2 layers analytics on top: the wildcard Postgres becomes the authoritative
 | Repo | File | Change |
 |------|------|--------|
 | mech | `task_execution/handlers.py` | Skip IPFS upload when offchain flag is set, retain content locally |
+| mech | `task_execution/behaviours.py` | Branch in `_execute_ipfs_tasks` |
 | mech | `task_submission_abci/behaviours.py` | Locally-computed CID instead of IPFS-uploaded one |
 | mech-client | `services/marketplace_service.py` | Drop the IPFS upload from the offchain path |
 | mech-interact | new `behaviours/offchain_request.py` | New HTTP request behaviour |
@@ -582,7 +742,7 @@ Phase 2 layers analytics on top: the wildcard Postgres becomes the authoritative
 |------|------|--------|
 | wildcard | new alembic migration | Add `mech_offchain` source, `mech_address`, `chain_id` columns |
 | wildcard | new FastAPI route `POST /predictions` | Accepts mech writes, validates auth, rate-limits |
-| wildcard | auth module | Per-operator API key issuance and validation |
+| wildcard | new `auth/mech_keys.py` | Per-operator API key issuance and validation |
 | mech | task_execution behaviour | Write to wildcard Postgres on request lifecycle events |
 | olas-website | `common-util/api/predict/tool-accuracy.ts` | Read predictions from Postgres, drop fuzzy matching |
 | olas-website | `common-util/api/predict/omenstrat-roi.ts` | Read predictions from Postgres |
