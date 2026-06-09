@@ -19,13 +19,25 @@ This document specifies how to add MPP (Machine Payments Protocol) session suppo
 
 ### Existing MPP Infrastructure
 
-Valory already runs MPP in production in the pearl-mini Chrome extension and the wildcard prediction server. We can reuse most of the off-chain pieces and only need to add the on-chain contracts.
+Valory already runs MPP in production in the pearl-mini Chrome extension and the wildcard prediction server. We can reuse most of the off-chain pieces and the on-chain pattern, but with one important caveat about what is and is not standardized.
 
-- **Client SDK**: `mppx@0.4.11` on npm (TypeScript). Already used by pearl-mini (`src/core/prediction/mpp-client.ts`). Provides EIP-712 voucher signing, channel state management, automatic 402 retry.
-- **Server SDK**: `pympp` plus a custom `SessionIntent` in Python. Already used by the wildcard server (`server/src/session/`). Provides voucher verification (`voucher.py`), monotonic cumulative store (`store.py`), and channel lifecycle handling (`intent.py`).
-- **Escrow contract reference**: Tempo's `TempoStreamChannel` (chainId 4217). Functionally identical to what we will deploy on the mech chains, just on a different chain.
+- **Client SDK**: `mppx@0.4.11` on npm (TypeScript). Already used by pearl-mini (`src/core/prediction/mpp-client.ts`). Provides EIP-712 voucher signing, channel state management, automatic 402 retry. **Important caveat:** `mppx` ships session machinery only via its `tempo()` method, which is hard-coded to Tempo chain (chainId 4217) and Tempo's `TempoStreamChannel` deployment. To target our `MppEscrow` on Gnosis / Base, we ship a Valory adapter (see Section 6.3). This is not a "configure tempo() differently" operation; it's a new method.
+- **Server SDK**: `pympp` plus a custom `SessionIntent` in Python. Already used by the wildcard server (`server/src/session/`). Provides voucher verification (`voucher.py`), monotonic cumulative store (`store.py`), and channel lifecycle handling (`intent.py`). The constructor already accepts `escrow_address` and `chain_id` as configuration, so the server-side port is mostly a domain rename and the module being lifted into the mech behaviour.
+- **Escrow contract reference**: Tempo's `TempoStreamChannel` (chainId 4217). Functionally identical in shape to what we deploy, but Tempo's deployment is theirs and our deployment is ours.
 
-This spec reuses the existing off-chain libraries. **No new client SDK is needed**, and the mech-side code is a port of the wildcard server modules.
+### What is and is not standardized
+
+The MPP protocol's challenge / credential / receipt framework is on the IETF standards track ([draft-ryan-httpauth-payment](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/)). The framework is stable.
+
+Per [mpp.dev/payment-methods/evm/](https://mpp.dev/payment-methods/evm/), the MPP EVM payment method standardizes the **charge intent only**: EIP-3009-based per-request payment, essentially the same shape as x402. **There is no canonical MPP EVM session intent.** Session intent is standardized for Tempo and Stellar (SEP-41) only.
+
+If we ship MPP session on Gnosis or Base, we are extending the protocol with a Valory-specific session intent. Consequences:
+
+- The on-chain contracts and the off-chain code stay as designed in this spec. The on-chain piece is what we own anyway.
+- We become spec authors for the session-intent-on-EVM details: voucher EIP-712 type, 402 challenge body schema, credential format, MppEscrow ABI as reference. Plan to publish this as a Valory extension document.
+- Agents using generic MPP clients (e.g. `mppx` with EVM charge method or any future standardized EVM client) cannot pay our session-mode mech without our adapter installed per mech.
+
+This is not a blocker. It is honest scope. The protocol authorship work is roughly one week on top of the contract and SDK work.
 
 ---
 
@@ -707,9 +719,9 @@ For each combination of {pre-deposit, x402, MPP session}, verify:
 | First-call UX | Sign, retry, done | Open channel (1 tx), then sign + retry |
 | Steady-state UX | Sign every request | Sign voucher locally, no on-chain |
 | Funds locked | None (per-request transfer) | Channel deposit until close |
-| Ecosystem | x402scan ~14k services, Bazaar, Coinbase | MPPscan ~226 servers, IETF draft |
+| Ecosystem | x402scan ~14k services, Bazaar, Coinbase | MPPscan ~419 servers (multi-chain via OpenAPI self-registration; same operator as x402scan) |
 | Client SDK | `valory-xyz/genai`, Coinbase x402 SDK | `mppx` (same as pearl-mini) |
-| Standardization | Informal Coinbase spec | IETF standards track |
+| Standardization | Informal Coinbase spec | IETF-track framework; session intent standardized only for Tempo and Stellar, our EVM session intent is a Valory extension |
 | New contracts on mech chain | 3 (BalanceTrackerX402, mech, factory) | 4 (MppEscrow, BalanceTrackerMppSession, mech, factory) |
 | Marketplace changes | None | None |
 

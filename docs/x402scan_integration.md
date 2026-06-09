@@ -360,6 +360,87 @@ When using an external facilitator, add Bazaar metadata to the 402 response for 
 
 ---
 
+## Appendix: MPP (Machine Payments Protocol) — How It Compares
+
+### What is MPP?
+
+MPP is an open protocol for machine-to-machine payments built by [Tempo](https://tempo.xyz) (Stripe-backed). Like x402, it uses HTTP 402 to signal "pay me first." Unlike x402, it supports multiple payment rails (crypto, cards, Lightning) and has a **session** mode that avoids per-request on-chain settlement.
+
+MPP's challenge / credential / receipt framework is on the [IETF standards track](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/) ("Payment HTTP Authentication Scheme"). Its ecosystem explorer is [MPPscan](https://www.mppscan.com/) (~419 servers as of writing, multi-chain via OpenAPI self-registration). MPPscan is operated by Merit Systems, the same outfit that runs x402scan. Note that the MPP EVM payment method standardizes the charge intent only; session intent is standardized for Tempo and Stellar.
+
+### How MPP works
+
+MPP uses three primitives in a single request-response cycle:
+
+1. **Challenge** — server returns HTTP 402 with `WWW-Authenticate: Payment` header specifying what to pay
+2. **Credential** — client fulfils payment, retries with `Payment-Credential` header containing proof
+3. **Receipt** — server returns the resource with `Payment-Receipt` header confirming settlement
+
+Two billing modes:
+
+**Charge** (same as x402): one on-chain transaction per request. Client signs payment, server settles on-chain, returns result.
+
+**Session** (unique to MPP): client opens a payment channel by depositing escrow on-chain (1 tx). Each subsequent request is just an off-chain signed voucher — no blockchain involved. The server periodically settles accumulated vouchers on-chain. When done, the client closes the channel and reclaims unspent funds.
+
+```
+Session example — 100 API calls at $0.01 each:
+
+  Open channel:  Client deposits $2 on-chain        → 1 tx
+  Requests 1-50: Client signs off-chain vouchers     → 0 tx
+  Settle:        Server submits voucher for $0.50     → 1 tx
+  Requests 51-100: More off-chain vouchers            → 0 tx
+  Close channel: Client gets $1.00 change back        → 1 tx
+
+  Total: 3 on-chain txns instead of 100
+```
+
+### MPP vs x402 vs Olas Marketplace
+
+| | **Olas Marketplace** | **x402** | **MPP** |
+|---|---|---|---|
+| **What it is** | On-chain marketplace for AI mech services — manages request lifecycle, payment, delivery, and reputation | Open protocol for paying APIs via HTTP 402 | Open protocol for machine-to-machine payments via HTTP 402 |
+| **Built by** | Valory / Olas | Coinbase | Tempo (Stripe-backed) |
+| **Payment flow** | Request → assign mech → deliver → settle (on-chain lifecycle) | 402 → client signs `X-Payment` → facilitator verifies/settles | 402 with `WWW-Authenticate` → client sends `Payment-Credential` → server returns `Payment-Receipt` |
+| **Payment methods** | Native ETH, ERC-20, Nevermined subscriptions, x402 (planned) | EIP-3009 USDC, Permit2 (any ERC-20) — crypto only | Stablecoins (Tempo), Lightning (Bitcoin), Stripe (cards), Visa tokens — extensible |
+| **Chains** | Base, Polygon, Gnosis, Ethereum, Arbitrum, Celo, Optimism (7+ EVM) | Base, Polygon, Solana, Avalanche, Sei (via facilitators) | Tempo chain (42431) primarily. Lightning for Bitcoin. Cards for fiat. |
+| **Settlement** | On-chain via `deliverMarketplaceWithSignatures`. Batching supported. | Facilitator settles on-chain. 1 tx per request. No batching. | Charge: 1 tx per request. Session: off-chain vouchers, periodic settlement. |
+| **Batching / sessions** | Batching supported (1 tx for N deliveries) | No batching | Sessions: off-chain vouchers, near-zero per-request cost |
+| **Gas cost for 100 requests** | ~1-5 txns (batched) | ~100 txns | Charge: ~100 txns. Session: ~3 txns |
+| **Reputation** | On-chain Karma contract — per-mech, per-requester scores | None | None |
+| **Delivery verification** | On-chain — mech must provide `deliveryData` to get paid | None — trust-based | Receipt header confirms payment, not delivery quality |
+| **Streaming / metered billing** | Not supported | Not supported | Yes — session intent with payment channels |
+| **Non-crypto payments** | No | No | Yes — Stripe, Visa, Lightning |
+| **MCP integration** | No | Yes (via middleware) | Yes — native JSON-RPC binding for agent tool calls |
+| **Discovery** | On-chain mech registry (Olas service IDs) | Bazaar + x402scan (~14k services) | MPPscan (~419 servers, multi-chain via OpenAPI self-registration) |
+| **Standardization** | Proprietary smart contracts | Informal Coinbase spec | IETF-track framework; session intent standardized only on Tempo and Stellar (EVM session is a Valory extension if we deploy it) |
+| **Ecosystem size** | ~100 mechs across chains | ~14k services (Base-heavy) | ~419 servers |
+| **Fiat support** | No | No | Yes |
+
+### What's relevant for Olas mechs
+
+**MPP sessions are the interesting part** — for high-frequency mech interactions (monitoring tasks, streaming, repeated queries), off-chain vouchers with periodic settlement would drastically reduce gas costs compared to x402's per-request settlement.
+
+**But sessions only work on Tempo chain.** They require Tempo's payment channel infrastructure. They cannot be used on Gnosis, Polygon, or Base without building custom state channel contracts — which is significant engineering (new escrow contracts, dispute resolution, timeout handling, integration with MechMarketplace).
+
+**MPP charge mode offers no advantage over x402** — it's the same pay-per-request model, just with different HTTP headers and a smaller ecosystem.
+
+**Olas's unique advantage remains the full lifecycle** — karma reputation, on-chain delivery proof (mech must provide `deliveryData` to get paid), marketplace-managed assignment, and batch settlement. Neither x402 nor MPP provide any of these. They're pure payment protocols; Olas is a marketplace with payment as one component.
+
+**Practical recommendation:** x402 on Base is where the volume is today (14k+ services). MPP is worth watching — the IETF backing, multi-rail payments, and session mode are genuinely differentiated — but the ecosystem is too small and Tempo-chain-centric to adopt now. If MPP adds EVM payment methods (Gnosis, Polygon, Base), that changes the calculus.
+
+### Sources
+
+- [MPP Protocol Specification](https://mpp.dev/) — full technical spec (challenge/credential/receipt, payment methods, session intent)
+- [MPPscan](https://www.mppscan.com/) — ecosystem explorer for MPP servers and transactions
+- [Tempo](https://tempo.xyz/) — the Stripe-backed blockchain MPP runs on
+- [Tempo Documentation](https://tempoxyz-tempo.mintlify.app/) — chain details, TIP-20 token standard, SDK references
+- [IETF Draft: Payment HTTP Authentication Scheme](https://datatracker.ietf.org/doc/draft-ryan-httpauth-payment/) — MPP's IETF standards track submission
+- [x402 Documentation](https://docs.x402.org/) — x402 protocol spec, facilitator docs, Bazaar discovery
+- [x402scan](https://www.x402scan.com/) — ecosystem explorer for x402 services
+- [x402scan Discovery Spec](https://www.x402scan.com/discovery) — auto-discovery requirements (OpenAPI, `/.well-known/x402`)
+
+---
+
 ## Summary
 
 | Question | Answer |

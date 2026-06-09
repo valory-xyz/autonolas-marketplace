@@ -11,7 +11,7 @@ A practical decision guide for choosing between the two paid-API families being 
 | First-request cost | 1 on-chain tx | 2 on-chain txs (open + first delivery) |
 | Nth-request cost | 1 on-chain tx | 0 (just an off-chain HTTP roundtrip) |
 | Crossover point | n/a | After ~3 requests per channel session |
-| Ecosystem today | ~14,000 services on x402scan | ~226 on MPPscan |
+| Ecosystem today | ~14,000 services on x402scan | ~419 on MPPscan (both run by Merit Systems) |
 | Specs | `docs/x402_spec.md` | `docs/mpp_session_spec.md` |
 
 If you cannot decide, ship **x402 first**. It catches the existing agent ecosystem with one HTTP shape and one settlement model. Add MPP later only if a real high-volume client emerges.
@@ -189,9 +189,21 @@ The flip side: MPP has the "client never closes channel" risk. The mech can clai
 
 x402scan and the Coinbase Bazaar index every x402 service automatically (via direct registration or facilitator-based crawling). For an AI agent searching for "any service that does prediction," x402scan is the first stop. ~14k services indexed.
 
-MPPscan has ~226 services. Lower visibility. Agents looking for paid APIs today are not finding their results on MPPscan.
+MPPscan (also run by Merit Systems, same operator as x402scan) supports multi-chain discovery via OpenAPI documents at `GET /openapi.json` with `x-payment-info` annotations. Services self-register at [mppscan.com/register](https://www.mppscan.com/register). So getting **listed** on MPPscan is straightforward and works for arbitrary EVM chains. As of writing it indexes ~419 services. Sources: [MPPscan discovery spec](https://www.mppscan.com/discovery/spec), [MPPscan register page](https://www.mppscan.com/register).
 
-This may flip in the long run, but for v1 the agent ecosystem is on x402.
+The deeper issue is interop, not visibility. See the next subsection.
+
+### MPP EVM standardizes charge intent only, not session
+
+The MPP protocol officially supports session intent only on Tempo (via `TempoStreamChannel`) and Stellar (via SEP-41). The [MPP EVM payment method](https://mpp.dev/payment-methods/evm/) is documented as supporting only the **charge intent**, which is EIP-3009-based per-request payment, essentially the same shape as x402 with different HTTP headers.
+
+If we ship MPP session on Gnosis or Base, we are extending the protocol with a Valory-specific session intent, not plugging into a standard. Consequences:
+
+- The protocol framework (challenge / credential / receipt, EIP-712 voucher format) is IETF-track and stable. The shape of what we build inherits from that.
+- But agents using a generic MPP client out of the box (e.g. `mppx` with EVM charge method) cannot pay a session-mode mech without our adapter installed per mech.
+- Even if MPPscan lists us via OpenAPI, the listing only advertises that we accept MPP. Actually transacting requires a client that knows our specific session intent.
+
+Compare to x402, where every x402-aware client can pay every x402-aware service out of the box. The protocol-level compatibility is symmetric.
 
 ### Failure mode side-by-side
 
@@ -205,6 +217,7 @@ Synthesis of the trade-offs above. Each cell is grounded in the source specs; re
 | Client disappears mid-session | No funds locked, no recovery needed | Funds locked until client calls `forceClose` after `CLOSE_TIMEOUT` (24h) (`mpp_session_spec.md` §3.1, §8) |
 | Cross-mech replay of auth or voucher | Blocked: `requestId` includes the calling mech (`x402_spec.md` §3.7) | Blocked: same `requestId` binding plus `salt = keccak256(mechAddress)` convention (`mpp_session_spec.md` §8) |
 | Per-request gas cost to the mech | Linear in N: each request needs its own `transferWithAuthorization` (~50k gas, `x402_spec.md` §3.3) | Constant after open: off-chain vouchers, batched settle (`mpp_session_spec.md` §3.7) |
+| Off-the-shelf MPP/x402 agent can pay our mech | Yes, x402 protocol compatibility is symmetric | No, agents need our session-intent adapter installed per mech (see "MPP EVM standardizes charge intent only" above) |
 
 The asymmetry is real: x402 protects the client from lock-in, MPP protects the mech from settlement loss. Neither is strictly safer; they trade different risks.
 
