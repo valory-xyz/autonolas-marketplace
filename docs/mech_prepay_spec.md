@@ -35,17 +35,32 @@ Across the three layers, here is what is in place today.
 ```
    Client EOA / Safe
         │
+        │  ONE-TIME SETUP
         │  USDC.approve(BalanceTracker, X)
-        │  BalanceTracker.deposit(X)           ──────────▶ mapRequesterBalances[client] += X
+        │  BalanceTracker.depositFor(client, X)        ──────────▶ mapRequesterBalances[client] += X
         ▼
-   MechMarketplace.request(...)                ──────────▶ debits mapRequesterBalances via
-                                                          checkAndRecordDeliveryRates
-                                                          (per-request, on-chain)
-   ── OR via signature flow ──
-   OlasMech.deliverMarketplaceWithSignatures(...)
-                                               ──────────▶ debits mapRequesterBalances via
-                                                          adjustMechRequesterBalances
-                                                          (one call per batch, on-chain)
+
+   ── for each request, off-chain ──
+   Client signs requestData hash off-chain
+   POSTs the signed request to the mech's HTTP endpoint
+   Mech runs the tool, returns 200 with request_id
+
+
+   ── periodically, mech batches N requests ──
+   Mech Safe submits ONE on-chain tx:
+   OlasMech.deliverMarketplaceWithSignatures(
+     requester, [N signed deliveries], rates, paymentData=b""
+   )                                                  ──────────▶ debits mapRequesterBalances
+                                                                  via adjustMechRequesterBalances
+                                                                  (one call covers N requests)
+
+
+   ── optional, when the client is done ──
+   Client calls BalanceTracker.withdrawRequester(amount)
+                                                      ──────────▶ refunds unused balance
+                                                                  (NEW: this function is the one
+                                                                   contract change in this spec,
+                                                                   see Section 3.1)
 ```
 
 What exists:
