@@ -12,7 +12,7 @@
   "serviceRegistryAddress": "0x9338b5153AE39BB89f50468E608eD9d764B755fD",
   "karmaAddress": "0xe3fd2799DBe6847b9161229e7F346F73b270E6A4",
   "karmaProxyAddress": "0x2C602C7B590ABFc148d8c7c5e4d58c56Be1d304a",
-  "fee": "0",
+  "fee": "1500",
   "minResponseTimeout": "60",
   "maxResponseTimeout": "300",
   "drainerAddress": "0x153196110040A0c729227C603Db3A6c6D91851B2",

@@ -27,7 +27,7 @@
   "olasAddress": "0xFEF5d947472e72Efbb2E388c730B7428406F2F95",
   "bridgeMediatorAddress": "0x9338b5153AE39BB89f50468E608eD9d764B755fD",
   "serviceRegistryAddress": "0xE3607b00E75f6405248323A9417ff6b39B244b50",
-  "fee": "0",
+  "fee": "1500",
   "minResponseTimeout": "60",
   "maxResponseTimeout": "300",
   "drainerAddress": "0x88943F63E29cd436B62cFfE332aD54De92AdCE98",
