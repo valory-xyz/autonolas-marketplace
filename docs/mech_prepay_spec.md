@@ -1,4 +1,4 @@
-# Olas Prepay, Minimum-Viable API Access for the Mech Marketplace
+# Mech Prepay, Minimum-Viable API Access for the Mech Marketplace
 
 ## 1. Overview
 
@@ -193,7 +193,7 @@ if available_amount < request_delivery_rate:
 # Proposed: include a structured body with deposit instructions
 if available_amount < request_delivery_rate:
     body = {
-        "scheme": "olas-prepay",
+        "scheme": "mech-prepay",
         "network": ledger_settings[ResponseKey.CHAIN_ID.value],
         "payee": balance_tracker_address,
         "token": usdc_token_address,
@@ -217,7 +217,7 @@ if available_amount < request_delivery_rate:
 
 That is the entire mech-side change. The existing balance check, task queue, signed-request validation, and batched settlement all stay as they are.
 
-Optional add: a new `GET /well-known/olas-prepay` route that returns the same instructions without a 402, so clients can discover deposit info before sending a request.
+Optional add: a new `GET /well-known/mech-prepay` route that returns the same instructions without a 402, so clients can discover deposit info before sending a request.
 
 ### 3.3 Client side, mech-interact gets an HTTP branch
 
@@ -327,9 +327,9 @@ This path is deliberately scoped down. Things to be explicit about.
 
 **No gasless client deposit.** The client EOA / Safe must have native gas (xDAI on Gnosis, ETH on Base) to call `approve` + `depositFor`. x402's EIP-3009 trick (client signs, mech submits) is the value-add we are NOT building. If our clients always have native gas (which Trader-style services do), this is fine. If we want to support pure-USDC HTTP agents, we'd need the x402 path.
 
-**No protocol-level compatibility with x402 or MPP clients.** The 402 response body has shape `{"scheme": "olas-prepay", ...}`, not the x402 `{"x402Version": 1, "accepts": [...]}` or MPP `WWW-Authenticate: Payment ...`. A generic x402 or `mppx` client cannot pay an olas-prepay mech without our custom adapter.
+**No protocol-level compatibility with x402 or MPP clients.** The 402 response body has shape `{"scheme": "mech-prepay", ...}`, not the x402 `{"x402Version": 1, "accepts": [...]}` or MPP `WWW-Authenticate: Payment ...`. A generic x402 or `mppx` client cannot pay an mech-prepay mech without our custom adapter.
 
-**No automatic discovery via x402scan or MPPscan.** Both indexers expect specific discovery formats (`/.well-known/x402` for x402, `GET /openapi.json` with `x-payment-info` for MPPscan). We could add an OpenAPI document later, but a "scheme: olas-prepay" entry will not be indexable by either today.
+**No automatic discovery via x402scan or MPPscan.** Both indexers expect specific discovery formats (`/.well-known/x402` for x402, `GET /openapi.json` with `x-payment-info` for MPPscan). We could add an OpenAPI document later, but a "scheme: mech-prepay" entry will not be indexable by either today.
 
 **Trader-only flow.** Only services that adopt the new `MechHttpRequestBehaviour` benefit. Existing on-chain `request()` callers keep working unchanged, but they keep paying per-request gas.
 
@@ -348,7 +348,7 @@ This path is deliberately scoped down. Things to be explicit about.
 
 ## 6. Comparison vs the other two options
 
-| Property | This spec (olas-prepay) | x402 | MPP session |
+| Property | This spec (mech-prepay) | x402 | MPP session |
 |----------|--------------------------|------|-------------|
 | New contracts | 0 (X1) or 1 (X2) | 3 | 4 |
 | Client gas required | Yes, to deposit | No (EIP-3009) | Yes, to open channel |
@@ -366,7 +366,7 @@ This path is deliberately scoped down. Things to be explicit about.
 
 If at some future point the team decides being indexable on MPPscan and payable by generic MPP clients matters, the upgrade path is orthogonal and additive. Nothing in this spec needs to be torn down.
 
-Three steps to add MPP-protocol compatibility on top of olas-prepay:
+Three steps to add MPP-protocol compatibility on top of mech-prepay:
 
 ### 7.1 Serve an OpenAPI discovery document
 
@@ -387,7 +387,7 @@ MPPscan indexes services by reading `GET /openapi.json` with `x-payment-info` an
         "x-payment-info": {
           "price": { "mode": "fixed", "currency": "USD", "amount": "0.0102" },
           "protocols": [
-            { "olas-prepay": { "scheme": "balance-tracker" } }
+            { "mech-prepay": { "scheme": "balance-tracker" } }
           ]
         },
         "responses": { "402": { "description": "Payment Required" } }
@@ -405,7 +405,7 @@ This step is documentation-only on the mech side; no contract or client changes.
 
 For an `mppx`-shaped client to talk to the mech, accept the standard MPP headers:
 
-- `WWW-Authenticate: Payment <challenge>` on 402 (in addition to the structured body olas-prepay already returns).
+- `WWW-Authenticate: Payment <challenge>` on 402 (in addition to the structured body mech-prepay already returns).
 - `Payment-Credential: <base64 credential>` on the retry (in addition to the body-based signature).
 - `Payment-Receipt: <base64 receipt>` on 200.
 
@@ -417,7 +417,7 @@ If voucher-based cumulative authorization matters at that point (because clients
 
 ### 7.4 If we want x402-protocol compatibility (a parallel path)
 
-For x402 specifically (much larger ecosystem at ~14k services), the upgrade is the `BalanceTrackerX402` family from `x402_spec.md`. It can ship in parallel with olas-prepay; the registry routes EIP-3009 paymentData to BalanceTrackerX402 and empty paymentData to whichever default tracker we point at.
+For x402 specifically (much larger ecosystem at ~14k services), the upgrade is the `BalanceTrackerX402` family from `x402_spec.md`. It can ship in parallel with mech-prepay; the registry routes EIP-3009 paymentData to BalanceTrackerX402 and empty paymentData to whichever default tracker we point at.
 
 ---
 
@@ -428,10 +428,10 @@ For x402 specifically (much larger ecosystem at ~14k services), the upgrade is t
 | Contract | `contracts/mechs/token/BalanceTrackerFixedPriceToken.sol` | Add `withdrawRequester(uint256)` (X1) | ~10 lines + audit |
 | Contract (alt) | `contracts/mechs/token/BalanceTrackerFixedPriceTokenWithdraw.sol` | New subclass with the same function (X2) | ~30 lines + audit + migration |
 | Mech | `mech/packages/valory/skills/task_execution/handlers.py` | Replace 402 body with structured deposit instructions | ~30 lines |
-| Mech (optional) | same | New `GET /well-known/olas-prepay` discovery route | ~30 lines |
+| Mech (optional) | same | New `GET /well-known/mech-prepay` discovery route | ~30 lines |
 | Client | `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/http_request.py` | New behaviour for HTTP signed-request path | ~300-500 lines + tests |
 | Client | `mech-interact/.../skill.yaml` | Add `mech_http_url`, `prefer_http_path` params | ~5 lines |
-| Docs | `docs/olas_prepay_spec.md` | This document | done |
+| Docs | `docs/mech_prepay_spec.md` | This document | done |
 
 Out-of-scope but trivial later additions:
 - OpenAPI doc for MPPscan listing (~50 lines, no code change)
