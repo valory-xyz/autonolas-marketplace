@@ -48,21 +48,26 @@ forge script scripts/proposals/proposal_01/Proposal01FeeActivation.s.sol:Proposa
 node scripts/proposals/proposal_01/annotate.js
 ```
 
-## ⚠ Pre-execution requirement — Arbitrum funding
+## ⚠ Pre-execution requirement — Arbitrum retryable value
 
-Entry **[3] Arbitrum** calls `Inbox.createRetryableTicket(...)`, which is `payable`. The Timelock
-must hold at least `ARB_TICKET_VALUE = ARB_MAX_SUBMISSION_COST + ARB_GAS_LIMIT * ARB_MAX_FEE_PER_GAS`
-ETH at queued-batch execution time:
+Entry **[3] Arbitrum** calls `Inbox.createRetryableTicket(...)`, which is `payable`. The required
+value is `ARB_TICKET_VALUE = ARB_MAX_SUBMISSION_COST + ARB_GAS_LIMIT * ARB_MAX_FEE_PER_GAS`:
 
 - `ARB_MAX_SUBMISSION_COST = 0.001 ETH`
 - `ARB_GAS_LIMIT = 1_000_000`
 - `ARB_MAX_FEE_PER_GAS = 0.1 gwei`
-- **Total ≈ 0.0011 ETH** (top up to **0.005 ETH** for margin)
+- **Total = 0.0011 ETH** (top to **0.005 ETH** for margin)
 
-At the time of writing the Timelock balance is ~`0.0001 ETH`. Fund the Timelock before queueing
-the batch (CM transfer is fine). Recompute `ARB_MAX_SUBMISSION_COST` closer to submission from
+**Who supplies this ETH:** the **executor of `Governor.execute(...)`**, NOT the Timelock. OZ's
+plumbing forwards `msg.value` executor → Governor → Timelock → target, so the Timelock holds the
+ETH only for the duration of the batch and ends at its pre-execute balance. The Timelock does
+**not** need to be pre-funded. Anyone calling `execute()` must attach at least `ARB_TICKET_VALUE`
+as `msg.value` (the fork test `test_FullGovernanceLifecycle` asserts the Timelock balance is
+unchanged across `execute()`).
+
+Recompute `ARB_MAX_SUBMISSION_COST` closer to submission from
 `Inbox.calculateRetryableSubmissionFee(data.length, basefee)` and adjust `ARB_MAX_FEE_PER_GAS`
-to current Arbitrum baseFee × 2.
+to current Arbitrum baseFee × 2 if either has drifted.
 
 This is the FIRST Olas Timelock-driven L1→L2 governance call on Arbitrum. The aliased Timelock
 (`0x4d30…A70F` = `0x3C1f…95fE + 0x1111…1111`) is verified as `MechMarketplaceProxy.owner()` on

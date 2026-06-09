@@ -43,14 +43,17 @@ contract Proposal01FeeActivationTest is Test, Proposal01Builder {
     // autonolas-governance). If proposal_11 has activated NEW_GOV (0x060D…51E6), switch this to NEW_GOV.
     address internal constant ACTIVE_GOV = 0x8E84B5055492901988B831817e4Ace5275A3b401;
 
-    function setUp() public {
+    function setUp() public view {
         assertEq(block.chainid, 1, "Must run on a mainnet fork (--fork-url $MAINNET_RPC)");
-        // Arbitrum entry is payable — fund the Timelock with the retryable cost.
-        vm.deal(TIMELOCK, TIMELOCK.balance + ARB_TICKET_VALUE);
     }
 
     function _execAll() internal {
         (address[] memory targets, uint256[] memory values, bytes[] memory calldatas,) = buildProposal();
+        // Fast-path impersonates the Timelock as the paying account: it pays values[i] from its own
+        // balance, so the Timelock itself must hold the retryable value here. (In the real lifecycle
+        // path, msg.value flows executor -> Governor -> Timelock -> target and no pre-funding is
+        // required — see test_FullGovernanceLifecycle.)
+        vm.deal(TIMELOCK, TIMELOCK.balance + ARB_TICKET_VALUE);
         vm.startPrank(TIMELOCK);
         for (uint256 i; i < targets.length; ++i) {
             (bool ok, bytes memory ret) = targets[i].call{value: values[i]}(calldatas[i]);
@@ -130,11 +133,16 @@ contract Proposal01FeeActivationTest is Test, Proposal01Builder {
         assertEq(uint256(gov.state(id)), 5, "not Queued");
         uint256 eta = gov.proposalEta(id);
         if (eta >= block.timestamp) vm.warp(eta + 1);
-        // Re-fund the Timelock right before execute() — vm.warp can run far ahead but ETH balance is
-        // preserved; this is defensive against any unexpected drain.
-        if (TIMELOCK.balance < ARB_TICKET_VALUE) vm.deal(TIMELOCK, ARB_TICKET_VALUE);
-        gov.execute(targets, values, calldatas, descHash);
+        // execute() is payable — msg.value flows executor -> Governor -> Timelock -> target. The
+        // Timelock holds no standing ETH; the executor must supply the Arbitrum retryable value.
+        uint256 timelockBalanceBefore = TIMELOCK.balance;
+        vm.deal(voter, ARB_TICKET_VALUE);
+        vm.prank(voter);
+        gov.execute{value: ARB_TICKET_VALUE}(targets, values, calldatas, descHash);
         assertEq(uint256(gov.state(id)), 7, "not Executed");
+        // Sanity: the Timelock balance did NOT need to be (and was not) topped up — the value passed
+        // through it. Net delta on the Timelock is zero.
+        assertEq(TIMELOCK.balance, timelockBalanceBefore, "Timelock balance must be unchanged");
 
         _assertEndState();
     }
