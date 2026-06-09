@@ -1,479 +1,657 @@
-# Mech Prepay, Minimum-Viable API Access for the Mech Marketplace
+# Mech Prepay Specification
 
-## 1. Overview
+## 1. How far are we from MPP, and what this spec closes
 
-This document specifies the minimum changes required to open the Mech Marketplace to HTTP-style paid-API access **without introducing a new payment family**. The existing pre-deposit `BalanceTrackerFixedPriceToken` is structurally identical to a payment channel: clients lock funds upfront, the mech serves many off-chain requests against the locked balance, and the mech settles the resulting deliveries in batches on-chain. Most of the plumbing already exists across three layers. We just need to close a few gaps.
+After shipping this spec, mech-prepay becomes functionally MPP session inside the BalanceTracker. The behavioral gap closes completely. The remaining differences are structural and external-compatibility.
 
-This sits alongside `x402_spec.md` (Option A) and `mpp_session_spec.md` (Option B) as the third option. It is the smallest scope of the three and the fastest to ship.
+| Property | mech-prepay today (pre-deposit only) | This spec | MPP session |
+|----------|---------------------------------------|-----------|-------------|
+| Cumulative voucher signing | No (per-request signatures) | **Yes** | Yes |
+| Funds locked against withdraw | No (race exists) | **Yes (encumbered channels)** | Yes (escrow contract) |
+| Settlement race | Exists (bounded by maxRate) | **Eliminated** | Eliminated |
+| Atomic batch revert (one bad voucher kills all) | Yes (DOS risk) | **No (fail-soft try/catch)** | Yes (not addressed in MPP spec) |
+| Per-request on-chain records | Yes (N events per batch) | **No (Postgres on mech side)** | No |
+| Cross-requester batching in one tx | No | **Yes (one tx covers M requesters)** | No (per-channel only) |
+| Custody contract | BalanceTracker (existing) | BalanceTracker (existing) | MppEscrow (new contract) |
+| Audit boundary | 1 contract | 1 contract | 2 contracts |
+| Discoverable on MPPscan | No | No (could add OpenAPI later) | No (same) |
+| Payable by generic mppx client | No | No | No |
+| MPP-protocol-compatible | No | No | Partial (Valory extension of session intent on EVM) |
 
-### Design intent
+### What we'd still need later to be MPP-protocol-compatible
 
-| Goal | How this spec meets it |
-|------|------------------------|
-| Open the marketplace to HTTP-native clients | Add a useful HTTP 402 challenge body to the mech's existing handler |
-| Avoid per-request on-chain settlement | Reuse the existing `deliverMarketplaceWithSignatures` batched path |
-| Let clients recover unused funds | Add `withdrawRequester` to the balance tracker |
-| Avoid building any new payment family | Reuse `BalanceTrackerFixedPriceToken`, `MechFixedPriceTokenUSDC`, and the existing factory |
-| Avoid breaking changes to MechMarketplace, OlasMech, Karma | Zero changes to those contracts |
+Three additions, all orthogonal to this spec, can be deferred to a v1.1:
 
-### What's deliberately out of scope
+1. **OpenAPI discovery document** at `GET /openapi.json` with `x-payment-info` annotations. Self-register at `mppscan.com/register`. Documentation work, no contract changes.
+2. **MPP-shaped HTTP headers**: accept `Payment-Credential` as an alternative to our voucher body, emit `Payment-Receipt` on 200. ~30 lines in the mech HTTP handler.
+3. **A standalone TypeScript adapter package** so external mppx-style clients can sign vouchers against our channels. ~400-600 lines.
 
-- x402 protocol compatibility (no EIP-3009 gasless deposit, no `X-Payment` header).
-- MPP protocol compatibility (no EIP-712 vouchers, no `MppEscrow`).
-- Off-the-shelf discoverability on x402scan or MPPscan (see Section 7 for the upgrade path).
+None of those change the on-chain story.
 
-The spec deliberately gives up wide ecosystem compatibility in exchange for shipping in roughly one to two weeks with one new on-chain function.
+### What this spec implements (the core deltas)
 
----
+- New EIP-712 PrepayVoucher type for cumulative authorization
+- New BalanceTracker subclass with channels + encumbrance + voucher settlement
+- New marketplace function `settleBatchByVouchers` with per-voucher try/catch
+- New OlasMech forwarder
+- New mech HTTP routes for channel-open hints and voucher submission
+- Postgres-backed mech-side response store (mirrors `wildcard/server/src/session/store.py`)
+- mech-client and mech-interact voucher branches
 
-## 2. Current architecture
-
-Across the three layers, here is what is in place today.
-
-### 2.1 Contract side, the marketplace + balance tracker
-
-```
-   Client EOA / Safe
-        │
-        │  ONE-TIME SETUP
-        │  USDC.approve(BalanceTracker, X)
-        │  BalanceTracker.depositFor(client, X)        ──────────▶ mapRequesterBalances[client] += X
-        ▼
-
-   ── for each request, off-chain ──
-   Client signs requestData hash off-chain
-   POSTs the signed request to the mech's HTTP endpoint
-   Mech runs the tool, returns 200 with request_id
-
-
-   ── periodically, mech batches N requests ──
-   Mech Safe submits ONE on-chain tx:
-   OlasMech.deliverMarketplaceWithSignatures(
-     requester, [N signed deliveries], rates, paymentData=b""
-   )                                                  ──────────▶ debits mapRequesterBalances
-                                                                  via adjustMechRequesterBalances
-                                                                  (one call covers N requests)
-
-
-   ── optional, when the client is done ──
-   Client calls BalanceTracker.withdrawRequester(amount)
-                                                      ──────────▶ refunds unused balance
-                                                                  (NEW: this function is the one
-                                                                   contract change in this spec,
-                                                                   see Section 3.1)
-```
-
-What exists:
-- `BalanceTrackerFixedPriceToken.deposit(amount)` (`contracts/mechs/token/BalanceTrackerFixedPriceToken.sol:93-101`) pulls USDC via `transferFrom` and credits `mapRequesterBalances[msg.sender]`.
-- `depositFor(account, amount)` (lines 107-115) does the same on behalf of another address.
-- `_adjustInitialBalance` in `BalanceTrackerBase` (lines 90-111) debits `mapRequesterBalances[requester]` by the summed delivery rate.
-- The marketplace's `deliverMarketplaceWithSignatures` (`MechMarketplace.sol:833`) verifies each request's `_verifySignedHash`, records the delivery, increments karma, then calls `BalanceTrackerX.adjustMechRequesterBalances` with `paymentData = b""` for the existing flow.
-
-What's missing:
-- **No requester withdraw entry.** `BalanceTrackerFixedPriceToken` has `deposit()` and `depositFor()` but nothing for the requester to recover their unused balance. The only paths out of `mapRequesterBalances` today are deliveries.
-
-### 2.2 Mech side, the off-chain HTTP handler
-
-The mech (running under open-autonomy) already has an HTTP server that accepts off-chain signed requests.
-
-```
-   Mech process
-   ├── Prometheus HTTP server (start_http_server, handlers.py:560-564)
-   │
-   ├── MechHttpHandler                                (handlers.py:518)
-   │   ├── POST  /send_signed_requests                _handle_signed_requests
-   │   │         body: {request_id, ipfs_hash,
-   │   │                sender, delivery_rate,
-   │   │                signature, ipfs_data}
-   │   │         flow:
-   │   │           1. validate request body           (handlers.py:577-609)
-   │   │           2. check on-chain balance          _check_offchain_requester_balance
-   │   │                 reads mech.paymentType()                  (handlers.py:880)
-   │   │                 reads mapPaymentTypeBalanceTrackers       (handlers.py:886-892)
-   │   │                 reads mapRequesterBalances[requester]    (handlers.py:902-906)
-   │   │           3. if available < required:        respond HTTP 402  (handlers.py:631-639)
-   │   │           4. else enqueue task               _enqueue_offchain_request
-   │   │
-   │   └── GET   /fetch_offchain_info                 _handle_offchain_request_info
-   │             returns stored response by request_id
-   │
-   └── task_submission_abci.behaviours
-       (behaviours.py:1580-1648)
-       Every batch cycle:
-         aggregate accepted offchain requests by sender
-         build deliver_with_signatures = [{requestData, signature, deliveryData}, ...]
-         build delivery_rates = [...]
-         call deliverMarketplaceWithSignatures with paymentData = b""
-```
-
-What exists:
-- HTTP route for signed requests + polling for results.
-- Live on-chain balance check before accepting work.
-- HTTP 402 returned on insufficient balance.
-- Batched on-chain settlement via `deliverMarketplaceWithSignatures(paymentData="")`.
-- Per-request signature verification on-chain via `MechMarketplace._verifySignedHash`.
-
-What's missing:
-- **The 402 response is a bare rejection.** `_send_rejection_response` returns `status_code=402, status_text="Payment required"` but the body is empty. A client receiving this has no way to know what to deposit, where, or how much.
-- **No deposit-instruction route.** No endpoint tells a fresh client how to fund itself.
-
-### 2.3 Client side, mech-interact
-
-The autonomous services that consume mech responses (Trader, Market-Creator, MemeOoorr, Pearl, IEKit, etc.) all use the `mech_interact_abci` skill. Its current flow is purely on-chain.
-
-```
-   mech_interact_abci/behaviours/
-   ├── request.py
-   │   MechRequestBehaviour:
-   │     _get_payment_type()                    on-chain read
-   │     _ensure_available_balance()           checks safe / token balance (request.py:512-563)
-   │                                            (NB: does NOT read BalanceTracker today)
-   │     _build_token_approval()               builds USDC.approve to BalanceTracker
-   │     _build_marketplace_v2_request_data    encodes MechMarketplace.request(
-   │                                              request_data,
-   │                                              priority_mech,
-   │                                              payment_data = EMPTY_PAYMENT_DATA_HEX,
-   │                                              payment_type,
-   │                                              response_timeout,
-   │                                              max_delivery_rate)
-   │
-   └── response.py
-       MechResponseBehaviour:
-         polls for Deliver event on the mech / marketplace contract
-         filters by request_id
-         decodes IPFS hash → fetches result from IPFS
-```
-
-What exists:
-- Full on-chain request submission via `MechMarketplace.request()` / `requestBatch()`.
-- Per-payment-type branching for native vs token vs NVM.
-- USDC approval flow.
-- Event-based response polling.
-
-What's missing:
-- **No off-chain signed-request flow.** mech-interact never POSTs to the mech's HTTP endpoint. Every request is one on-chain transaction.
-- **No deposit-then-batched-delivery flow on the client side.** Even though the mech supports it server-side, the client always uses the per-request on-chain path.
+Total new code: ~2000 lines across contracts, mech, and clients. One new audit boundary (the BalanceTracker subclass).
 
 ---
 
-## 3. Minimum v1 changes
+## 2. The design, problem by problem
 
-Three small deltas, one per layer. Total scope is roughly one to two weeks of work plus a contract audit.
+Five distinct problems with today's mech-prepay. Each has its own targeted fix.
 
-### 3.1 Contract side, one new function
+### A. Batch settlement cost is linear in request count
 
-Add a requester withdraw entry to `BalanceTrackerFixedPriceToken` so a client can recover unused balance. Two ways to ship it.
+**Problem.**
 
-**Option X1, modify in place (~10 lines, ~1 line of fee logic).** Add directly to `BalanceTrackerFixedPriceToken.sol`:
+`MechMarketplace._deliverMarketplaceWithSignatures` (`MechMarketplace.sol:206-285`) iterates over the batch and verifies each request individually. The per-iteration work is approximately:
 
-```solidity
-function withdrawRequester(uint256 amount) external {
-    if (_locked == 2) revert ReentrancyGuard();
-    _locked = 2;
-
-    uint256 balance = mapRequesterBalances[msg.sender];
-    if (balance < amount) revert InsufficientBalance(balance, amount);
-    mapRequesterBalances[msg.sender] = balance - amount;
-
-    IToken(token).transfer(msg.sender, amount);
-    emit Withdraw(msg.sender, token, amount);
-
-    _locked = 1;
-}
+```
+for each i in 0..N-1:
+    keccak hash to derive requestId
+    ecrecover to verify the per-request signature
+    SSTORE to record the request info
+    LOG to emit the Deliver event
 ```
 
-Reentrancy-guarded for safety. Uses the existing `Withdraw` event. Touches no other state.
+At roughly 50,000 gas per iteration, a 50-request batch from one client burns ~2.5M gas just on this loop, before the actual balance accounting. Multiply by M distinct clients per batch window and on-chain settlement dominates everything else.
 
-**Option X2, deploy a thin subclass (~30 lines).** Define `BalanceTrackerFixedPriceTokenWithdraw` that inherits `BalanceTrackerFixedPriceToken` and adds the same function. Deploy a new instance, register against the same payment type via `setPaymentTypeBalanceTrackers`, migrate live balances. More work to deploy, zero changes to a live contract.
+**Fix.**
 
-Pick one. X1 is cheaper to ship but mutates an existing contract; X2 keeps existing code untouched but requires a migration of `mapRequesterBalances`.
+Replace per-request signatures with one cumulative voucher per `(requester, mech)` pair per batch period. The client signs ONE EIP-712 typed message authorizing a `cumulativeAmount`. Each new request bumps the cumulative. The mech keeps only the latest voucher per pair off-chain. On settlement, the BalanceTracker verifies ONE signature, checks monotonicity, and debits the delta.
 
-**No other contract changes.** MechMarketplace, OlasMech, Karma, fee logic, all factories, all other balance trackers stay exactly as they are.
+For 100 off-chain requests from one client: one signature on-chain, one storage write, one balance update. Constant cost regardless of N.
 
-### 3.2 Mech side, replace the 402 body
+For 100 requests across 50 clients: 50 signatures total, not 100. Linear in distinct requesters, not in total requests.
 
-In `mech/packages/valory/skills/task_execution/handlers.py`, change `_send_rejection_response` (or add a new helper) so the 402 response includes deposit instructions.
+This is the core scaling unlock. Everything else builds on it.
 
-```python
-# Current (handlers.py:631-639)
-if available_amount < request_delivery_rate:
-    self._send_rejection_response(
-        http_msg, http_dialogue, request_id,
-        reason="insufficient balance",
-        status_code=HttpCode.PAYMENT_REQUIRED_CODE.value,
-        status_text="Payment required",
+### B. Settlement race lets clients drain funds before the mech settles
+
+**Problem.**
+
+In plain mech-prepay (no encumbrance), the mech accepts a voucher off-chain, returns the result to the client at HTTP 200, then later attempts to settle on-chain. Between those moments the client can call `withdrawRequester` and empty `mapRequesterBalances`. The mech's settlement reverts with `InsufficientBalance`. The mech ate the cost of running the tool.
+
+Per-request exposure is bounded by `maxDeliveryRate` (~$0.05). But across a high-volume mech, this becomes a denial-of-payment vector. A client can submit a request, wait for the result, then sweep their balance before the batch cycle. Repeated, it's an attack on mech revenue.
+
+**Fix.**
+
+Lock funds BEFORE the off-chain acceptance, not after. Introduce a channel concept that lives inside the existing BalanceTracker (no separate escrow contract).
+
+Each `(payer, mech)` pair gets a channel record:
+
+- **Deposit**: the locked amount committed to this channel at open time
+- **Settled**: cumulative already settled on-chain via vouchers
+- **Expiry**: timestamp after which the payer can force-close
+- **Finalized flag**: set when the channel closes
+
+The BalanceTracker also tracks per-requester encumbered total. The lifecycle:
+
+- `openChannel(mech, deposit, expiry)`: payer commits `deposit` from `mapRequesterBalances` into `mapEncumberedAmount` and into the new channel. Funds are locked.
+- `settleByVoucher(...)`: marketplace-only. Moves voucher delta from encumbered to `mapMechBalances[mech]`.
+- `closeChannel(channelId, finalCumulative, finalSig)`: settles the last voucher, refunds residual back to `mapRequesterBalances[payer]`, finalizes.
+- `requestClose(channelId)` + `forceClose(channelId)` after `CLOSE_TIMEOUT` (24h): payer's safety valve if the mech goes silent.
+
+`withdrawRequester` operates only on `mapRequesterBalances` (the free portion), never on encumbered funds. The mech is guaranteed it can settle any voucher up to the channel's deposit cap.
+
+The race is eliminated by construction. Same property MPP gives via its escrow.
+
+### C. One bad voucher reverts the whole batch
+
+**Problem.**
+
+`deliverMarketplaceWithSignatures` is atomic. One bad signature in a batch reverts everything. In a multi-requester batch where 99 vouchers are valid and 1 is malformed (expired, insufficient deposit, bad signature), all 100 settlements fail. The mech has to identify the bad voucher off-chain, drop it, and resubmit.
+
+A single misbehaving (or buggy) client can break a mech's entire settlement cycle. Real DOS vector.
+
+**Fix.**
+
+Per-voucher `try`/`catch` in the new marketplace batch settlement. Each voucher is settled inside its own try block; failures emit a `VoucherSettlementFailed` event and the loop continues to the next voucher.
+
+The per-voucher `settleByVoucher` is reentrancy-guarded and idempotent on success (advances `mapChannels[channelId].settled`). A failure leaves the channel state unchanged. Bad vouchers are isolated; good ones still settle.
+
+This is actually BETTER than MPP session's behavior, which doesn't specify fail-soft batching.
+
+### D. Per-request on-chain records add bloat for no benefit
+
+**Problem.**
+
+Today every delivery emits a `Deliver` event and stores a `RequestInfo` struct in `mapRequestIdInfos[requestId]`. For high-volume mechs that's a lot of on-chain state and event emissions purely to record "this request was delivered."
+
+Subgraph indexers consume these events for delivery tracking. But HTTP-style paid-API clients already poll the mech's HTTP endpoint for results. They don't read the subgraph. So the on-chain delivery records are paid-for-but-unused for this access pattern.
+
+**Fix.**
+
+Drop per-request on-chain records. Persist delivery data on the mech side using the wildcard pattern (`wildcard/server/src/session/store.py`).
+
+Two layers of mech-side storage:
+
+**Layer 1, `synchronized_data`** (already exists in open-autonomy):
+- Channel state per active `(requester, mech)` pair: channelId, deposit, expiry, highestAcceptedCumulative, lastSettledOnChain, latestVoucherSig
+- Pending voucher acceptance log waiting for next batch settlement
+- Survives agent restart, consistent across the ensemble
+
+**Layer 2, optional Postgres** for delivery results (recommended for production):
+
+```sql
+CREATE TABLE prepay_requests (
+    request_id TEXT PRIMARY KEY,
+    requester TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    cumulative_at_acceptance NUMERIC NOT NULL,
+    ipfs_hash_of_result TEXT,
+    accepted_at TIMESTAMP NOT NULL,
+    settled_on_chain_at TIMESTAMP
+);
+CREATE INDEX idx_prepay_requester ON prepay_requests(requester);
+CREATE INDEX idx_prepay_channel ON prepay_requests(channel_id);
+```
+
+Mirrors wildcard's production schema.
+
+On-chain events in the voucher path:
+- `ChannelOpened` (one per channel open)
+- `VoucherSettled` (one per successful voucher in a batch)
+- `VoucherSettlementFailed` (one per failed voucher in a batch)
+- `MarketplaceVoucherSettlement` (one per batch)
+- `ChannelClosed` (one per channel close)
+
+No per-request `Deliver` event. Clients fetch results via the existing HTTP `GET /fetch_offchain_info` endpoint.
+
+### E. Settlement is per-requester, not across requesters
+
+**Problem.**
+
+Even with cumulative vouchers, today's `deliverMarketplaceWithSignatures(requester, ...)` takes one `requester` parameter. To settle vouchers from M different clients, the mech submits M separate transactions. For 50 active clients in a 5-minute window, that's 50 transactions instead of 1. The marketplace overhead (mech check, paymentType lookup, balance tracker resolution) repeats 50 times.
+
+**Fix.**
+
+`settleBatchByVouchers` takes an array of vouchers, one entry per requester. Inside the loop (with try/catch from problem C), each `settleByVoucher` call debits the right channel's encumbrance and credits `mapMechBalances[mech]`.
+
+The mech submits ONE transaction with one voucher entry per active requester. Marketplace overhead amortizes across all of them.
+
+For 1000 requests across 100 clients in a window: 1 transaction with 100 voucher entries inside it.
+
+---
+
+## 3. Putting it together
+
+### 3.1 EIP-712 voucher type
+
+```
+EIP-712 domain:
+    name              = "Olas Mech Prepay Channel"
+    version           = "1"
+    chainId           = block.chainid
+    verifyingContract = BalanceTracker address
+
+EIP-712 type:
+    PrepayVoucher(
+        address mech,
+        address requester,
+        bytes32 channelId,
+        uint128 cumulativeAmount
     )
-    return
-
-# Proposed: include a structured body with deposit instructions
-if available_amount < request_delivery_rate:
-    body = {
-        "scheme": "mech-prepay",
-        "network": ledger_settings[ResponseKey.CHAIN_ID.value],
-        "payee": balance_tracker_address,
-        "token": usdc_token_address,
-        "currentBalance": str(available_amount),
-        "required": str(request_delivery_rate),
-        "recommendedDeposit": str(request_delivery_rate * 100),   # ~100 requests
-        "deposit": {
-            "function": "depositFor",
-            "abi": "depositFor(address account, uint256 amount)",
-            "args": {"account": sender, "amount": str(request_delivery_rate * 100)}
-        },
-        "withdraw": {
-            "function": "withdrawRequester",
-            "abi": "withdrawRequester(uint256 amount)"
-        },
-        "error": "Payment required, deposit USDC to continue"
-    }
-    self._send_402_with_body(http_msg, http_dialogue, request_id, body)
-    return
 ```
 
-That is the entire mech-side change. The existing balance check, task queue, signed-request validation, and batched settlement all stay as they are.
+The voucher is bound to a specific channel via `channelId`. The channel itself carries `expiry`; the voucher inherits it.
 
-Optional add: a new `GET /well-known/mech-prepay` route that returns the same instructions without a 402, so clients can discover deposit info before sending a request.
+### 3.2 New contract: BalanceTrackerFixedPriceTokenChannel
 
-### 3.3 Client side, mech-interact gets an HTTP branch
+Subclass of `BalanceTrackerFixedPriceToken`. Adds:
 
-Add a new behaviour (or extend `MechRequestBehaviour`) that uses the mech's HTTP endpoint instead of the on-chain `request()` call. This is the bigger of the three changes but still bounded.
+- Mappings: `mapChannels` (channel state by id), `mapEncumberedAmount` (per-requester locked total)
+- Events: `ChannelOpened`, `VoucherSettled`, `ChannelCloseRequested`, `ChannelClosed`
+- Functions: `openChannel`, `settleByVoucher` (marketplace-only), `closeChannel`, `requestClose`, `forceClose`
+- Custom errors: `ChannelAlreadyOpen`, `ChannelNotOpen`, `ChannelFinalized`, `VoucherExpired`, `NonMonotonicCumulative`, `ExceedsDeposit`, `InvalidVoucherSignature`, `CloseNotRequested`, `CloseTimeoutNotReached`, `PastExpiry`
+- EIP-712 helper for the voucher digest
+
+Inherits unchanged from the base: `deposit`, `depositFor`, `withdrawRequester`, `processPaymentByMultisig`, fee logic.
+
+`CLOSE_TIMEOUT` constant set to 24 hours.
+
+### 3.3 Marketplace addition
+
+One new function: `settleBatchByVouchers(PrepayVoucherInput[])`. Wraps each voucher's settlement in `try`/`catch`. On success, does per-requester karma + counter updates. On failure, emits `VoucherSettlementFailed` and continues. After the loop, does aggregate karma + counter updates for the mech using the totalSuccessfulRequests count.
+
+### 3.4 OlasMech addition
+
+One forwarder function, `onlyOperator`, that calls `MechMarketplace.settleBatchByVouchers`.
+
+### 3.5 Registration
 
 ```
-   mech_interact_abci/behaviours/
-   └── http_request.py                      NEW
-       MechHttpRequestBehaviour:
-         1. resolve mech HTTP endpoint     (from params.mech_http_url or via discovery)
-         2. check pre-deposit balance       on-chain read of mapRequesterBalances[safe]
-         3. if balance < quote:
-              build USDC.approve + BalanceTracker.depositFor multisend
-              submit on-chain                                     ◀── one tx, only when needed
-         4. sign requestData with safe key  (same shape as deliverMarketplaceWithSignatures
-                                              expects: hash includes mech, requester,
-                                              requestData, deliveryRate, paymentType, nonce)
-         5. POST to mech /send_signed_requests
-              body: {request_id, ipfs_hash, sender, delivery_rate, signature, ipfs_data}
-         6. receive HTTP 200 with request_id
-              OR HTTP 402 with deposit instructions ◀── re-trigger step 3 with the
-                                                       recommendedDeposit from the body
-         7. store request_id for response polling
+mechMarketplace.setPaymentTypeBalanceTrackers(
+    [keccak256("MECH_PREPAY_CHANNEL_USDC")],
+    [BalanceTrackerFixedPriceTokenChannel_address]
+);
 ```
 
-The matching response behaviour either keeps using on-chain Deliver event polling (the mech's batched `deliverMarketplaceWithSignatures` emits the same Deliver event) or switches to the HTTP `GET /fetch_offchain_info` polling that the mech already supports.
-
-A new param is needed in `skill.yaml`:
-
-```yaml
-mech_http_url: ""               # if set, use the HTTP request branch
-prefer_http_path: false         # explicit opt-in
-```
-
-Estimated effort: ~300-500 lines of new behaviour code in `mech_interact_abci`, plus tests. The existing `_ensure_available_balance` and the multisend approval helper get reused.
+Distinct payment type from the existing `FixedPriceTokenUSDC`. Mechs that want the new behavior deploy with this payment type. Existing mechs keep working unchanged.
 
 ---
 
 ## 4. End-to-end flow
 
 ```
-Client Safe        Trader (mech-interact)        Mech HTTP        Mech behaviours     On-chain
-──────────         ───────────────────────       ──────────       ────────────────    ────────
+Phase 1, one-time deposit (existing mech-prepay)
+────────────────────────────────────────────────
+Client EOA / Safe
+   USDC.approve(BalanceTracker, X)
+   BalanceTracker.depositFor(client, X)         ────▶ mapRequesterBalances[client] += X
 
-                                                                                      One-time setup:
-                                                                                      USDC.approve(BalTracker, X)
-                                                                                      BalTracker.depositFor(safe, X)
-                                                                                                  │
-                                                                                                  ▼
-                                                                                      mapRequesterBalances[safe] += X
-                                                                                                  ╱
-                                                                                                 ╱ now ready
-                                                                                                ╱
 
-   ◀──── mech_interact_abci issues a request ────▶
+Phase 2, open a channel with a specific mech
+────────────────────────────────────────────
+Client EOA / Safe
+   BalanceTracker.openChannel(mech, deposit=Y, expiry=now+24h)
+                                                ────▶ moves Y from mapRequesterBalances
+                                                       to mapEncumberedAmount (locked)
+                                                ────▶ mapChannels[channelId] stored
+                                                ────▶ ChannelOpened event
 
-                  resolve quote (max delivery rate)
-                  sign requestData → signature
-                  POST /send_signed_requests ──────────▶ parse body
-                                                         _check_offchain_requester_balance
-                                                            on-chain read: mapRequesterBalances[safe]
-                                                         IF balance >= quote:
-                                                            enqueue task                      ──▶ run tool
-                                                            HTTP 200 { request_id }
-                                                         ELSE:
-                                                            HTTP 402 with deposit instructions
 
-                  IF HTTP 402:
-                    multisend: approve + depositFor                                                     ──▶ deposit tx
-                    retry POST
+Phase 3, off-chain request loop (no on-chain activity)
+──────────────────────────────────────────────────────
+For each request:
+   Client → POST /predict { tool, prompt }
+   Mech → HTTP 402 { scheme: "olas-prepay-voucher", channelId,
+                     eip712_domain, current_cumulative, would_be_cumulative }
+   Client signs PrepayVoucher(mech, client, channelId, new_cumulative)
+   Client → POST /predict { ..., voucher: {cumulative, sig} }
+   Mech verifies sig + monotonicity + cumulative ≤ channel.deposit
+   Mech runs tool, returns HTTP 200 { result, accepted_cumulative }
+   Mech persists:
+      synchronized_data: latestVoucher[(client, mech)] = {cumulative, sig}
+      Postgres: (request_id, client, channelId, cumulative, ipfs_hash, now)
 
-                  poll for response:
-                    GET /fetch_offchain_info?request_id     OR    listen for Deliver event on-chain
 
-   ◀──── periodically, mech batches and settles ────▶
+Phase 4, batched on-chain settlement with fail-soft
+───────────────────────────────────────────────────
+Mech Safe accumulates latest voucher per active (requester, mech).
+Once per batch window:
 
-                                                         task_submission_abci builds:
-                                                            deliver_with_signatures = [N items]
-                                                            delivery_rates = [...]
-                                                            paymentData = b""
-                                                         Submit deliverMarketplaceWithSignatures ──▶ marketplace records N
-                                                                                                    deliveries, debits
-                                                                                                    mapRequesterBalances[safe]
-                                                                                                    by sum(rates), credits
-                                                                                                    mapMechBalances[mech].
-                                                                                                    Karma + fees fire.
+   OlasMech.settleBatchByVouchers([
+      { requester, channelId, cumulative, count, sig },
+      { requester, channelId, cumulative, count, sig },
+      ...
+   ])
 
-   ◀──── eventually, client withdraws unused balance ────▶
+   ────▶ MechMarketplace.settleBatchByVouchers
+         for each voucher (in try/catch):
+            BalanceTracker.settleByVoucher(...)
+               verify sig, monotonicity, ≤ deposit, not finalized
+               delta = cumulative - settled
+               mapEncumberedAmount[requester] -= delta
+               mapMechBalances[mech] += delta
+               mapChannels[channelId].settled = cumulative
+               emit VoucherSettled
+            on failure: emit VoucherSettlementFailed, continue
+         aggregate karma + counters for successful ones
+         emit MarketplaceVoucherSettlement
 
-                  call BalTracker.withdrawRequester(amount) ──────────────────────────▶ mapRequesterBalances[safe] -= amount
-                                                                                       USDC.transfer(safe, amount)
+
+Phase 5, channel close
+──────────────────────
+Happy path (mech-initiated):
+   Mech Safe → BalanceTracker.closeChannel(channelId, finalCumulative, finalSig)
+                                                ────▶ settles last voucher
+                                                ────▶ refunds (deposit - finalCumulative)
+                                                       back to mapRequesterBalances[client]
+                                                ────▶ marks finalized
+                                                ────▶ ChannelClosed event
+
+Safety path (payer-initiated, if mech goes silent):
+   Client → requestClose(channelId)             emits ChannelCloseRequested
+   wait CLOSE_TIMEOUT (24h)
+   Client → forceClose(channelId)               refunds residual, marks finalized
+
+
+Phase 6, withdraw free balance (existing mech-prepay)
+─────────────────────────────────────────────────────
+Client → BalanceTracker.withdrawRequester(amount)
+                                                ────▶ operates only on mapRequesterBalances
+                                                       (encumbered portion is untouchable)
 ```
 
-Two on-chain transactions in steady state per long-lived client:
-- one deposit upfront (or top-up when 402 hints at it)
-- one batched settlement per N requests
-
-Plus one optional withdraw when the client is done.
-
-Compare to today (mech-interact on-chain path): every request is at minimum one `request()` tx, often two if approval is needed. So this collapses N+1 transactions per N requests down to roughly 2.
+The race is gone. The atomic batch is gone. Per-request on-chain records are gone. Settlement is one transaction per batch window across all active requesters.
 
 ---
 
-## 5. Downsides and what we give up
+## 5. Worked example
 
-This path is deliberately scoped down. Things to be explicit about.
+Setup:
+- Alice deposits $1.00 into the BalanceTracker. `mapRequesterBalances[Alice] = 1_000_000`.
+- Mech rate: $0.01 per request. Quote: 10_000 atomic units.
+- Alice opens a channel: `openChannel(mech, 500_000, now+24h)`.
+  - `mapRequesterBalances[Alice]` becomes 500_000 (free)
+  - `mapEncumberedAmount[Alice]` becomes 500_000 (locked in channel)
+  - `mapChannels[cA].deposit = 500_000, settled = 0`
 
-**No gasless client deposit.** The client EOA / Safe must have native gas (xDAI on Gnosis, ETH on Base) to call `approve` + `depositFor`. x402's EIP-3009 trick (client signs, mech submits) is the value-add we are NOT building. If our clients always have native gas (which Trader-style services do), this is fine. If we want to support pure-USDC HTTP agents, we'd need the x402 path.
+15 minutes pass, Alice makes 8 requests off-chain:
+- Each request signs voucher with cumulative 10_000, 20_000, ..., 80_000
+- 0 on-chain transactions
+- Mech persists results in Postgres
+- Mech holds latest voucher off-chain: `{cumulative: 80_000, sig: sig_8}`
 
-**No protocol-level compatibility with x402 or MPP clients.** The 402 response body has shape `{"scheme": "mech-prepay", ...}`, not the x402 `{"x402Version": 1, "accepts": [...]}` or MPP `WWW-Authenticate: Payment ...`. A generic x402 or `mppx` client cannot pay an mech-prepay mech without our custom adapter.
+During these 15 minutes Alice tries to drain her wallet:
+- `withdrawRequester(500_000)` succeeds. She gets her free balance back.
+- She CANNOT touch the 500_000 in the channel. Encumbered.
+- Mech still safely holds claim to up to 500_000 via accepted vouchers.
 
-**No automatic discovery via x402scan or MPPscan.** Both indexers expect specific discovery formats (`/.well-known/x402` for x402, `GET /openapi.json` with `x-payment-info` for MPPscan). We could add an OpenAPI document later, but a "scheme: mech-prepay" entry will not be indexable by either today.
+At the batch boundary, mech submits:
 
-**Trader-only flow.** Only services that adopt the new `MechHttpRequestBehaviour` benefit. Existing on-chain `request()` callers keep working unchanged, but they keep paying per-request gas.
-
-**Per-request signature, not voucher.** We use the existing per-request `_verifySignedHash` model. MPP's cumulative voucher is a UX improvement (one signature for many requests). Per-request signing is functionally equivalent for security but slightly noisier off-chain.
-
-**Settlement race still exists.** A client could call `withdrawRequester` to drain `mapRequesterBalances` between a successful HTTP 200 and the mech's next batched settlement. The settlement would revert (`InsufficientBalance`), the mech eats the cost of the served request. This is the same shape of risk as x402's settlement race, bounded by the same `maxDeliveryRate`. Mitigations:
-- Mech checks balance at HTTP accept time (already done).
-- Mech can optionally reserve the balance off-chain in `synchronized_data` until settlement, refusing to accept further work that would exceed the reserved amount.
-- The withdraw entry can include a per-block delay or a "pending settlement" check.
-
-**No requester refund on partial overpayment in the deposit step.** Once funds are in the BalanceTracker, the only way out is `withdrawRequester` (new) or successful delivery. There is no automatic refund.
-
-**The risk asymmetry with MPP:** in MPP, funds are locked in the escrow until settled; the mech is always paid. In this spec, funds are in the BalanceTracker but the client can withdraw before settlement. So the mech bears more risk here than under MPP session. The trade is one fewer contract to audit and a much smaller scope.
-
----
-
-## 6. Comparison vs the other two options
-
-| Property | This spec (mech-prepay) | x402 | MPP session |
-|----------|--------------------------|------|-------------|
-| New contracts | 0 (X1) or 1 (X2) | 3 | 4 |
-| Client gas required | Yes, to deposit | No (EIP-3009) | Yes, to open channel |
-| Per-request on-chain cost | None after deposit | One settle per request | None after open |
-| Settlement race exposure | Yes (bounded by maxRate) | Yes (bounded by maxRate) | No (escrow holds funds) |
-| Out-of-the-box agent compatibility | None, requires Valory adapter | High, any x402 client works | None, requires Valory adapter |
-| Discoverable on x402scan | No without an adapter | Yes via register-origin | No |
-| Discoverable on MPPscan | No without OpenAPI doc | No | Yes via OpenAPI self-registration |
-| Standardization | Valory-only | Coinbase informal spec | IETF-track framework, but EVM session is a Valory extension |
-| Estimated effort | ~1-2 weeks + audit of 1 function | ~3-4 weeks + audit of 3 contracts | ~6-8 weeks + audit of 4 contracts |
-
----
-
-## 7. Path to MPP-protocol compatibility (if we want it later)
-
-If at some future point the team decides being indexable on MPPscan and payable by generic MPP clients matters, the upgrade path is orthogonal and additive. Nothing in this spec needs to be torn down.
-
-Three steps to add MPP-protocol compatibility on top of mech-prepay:
-
-### 7.1 Serve an OpenAPI discovery document
-
-MPPscan indexes services by reading `GET /openapi.json` with `x-payment-info` annotations on paid endpoints. Add a new mech HTTP route that returns such a document:
-
-```json
-{
-  "openapi": "3.1.0",
-  "info": {
-    "title": "Olas Mech",
-    "version": "1.0.0",
-    "x-guidance": "AI tool execution via Olas marketplace. Pre-deposit USDC to a balance tracker, then sign per-request hashes."
-  },
-  "paths": {
-    "/send_signed_requests": {
-      "post": {
-        "summary": "Submit a signed paid request",
-        "x-payment-info": {
-          "price": { "mode": "fixed", "currency": "USD", "amount": "0.0102" },
-          "protocols": [
-            { "mech-prepay": { "scheme": "balance-tracker" } }
-          ]
-        },
-        "responses": { "402": { "description": "Payment Required" } }
-      }
-    }
-  }
-}
+```
+settleBatchByVouchers([
+  { requester: Alice, channelId: cA, cumulative: 80_000, count: 8, sig: sig_8 }
+])
 ```
 
-Self-register at `https://www.mppscan.com/register`. This alone gives MPPscan listing. Source: [mppscan.com/discovery/spec](https://www.mppscan.com/discovery/spec).
+Inside the contract:
+- Voucher sig verified
+- `cumulative (80_000) > settled (0)` ✓
+- `cumulative (80_000) ≤ deposit (500_000)` ✓
+- delta = 80_000
+- `mapEncumberedAmount[Alice]` -= 80_000 (now 420_000)
+- `mapMechBalances[mech]` += 80_000
+- `mapChannels[cA].settled = 80_000`
+- Karma + counters for Alice
+- One `VoucherSettled` event
 
-This step is documentation-only on the mech side; no contract or client changes.
+Alice continues. Eventually one party closes:
+- `closeChannel(cA, 92_000, latest_sig)` settles the last voucher (delta 12_000), refunds 408_000 back to `mapRequesterBalances[Alice]`.
 
-### 7.2 Accept MPP-shaped HTTP headers as an alternative entrypoint
+Total on-chain transactions for 9 requests: 1 deposit + 1 openChannel + 1 batched settle + 1 closeChannel = 4 transactions, regardless of how many requests fit in the channel window.
 
-For an `mppx`-shaped client to talk to the mech, accept the standard MPP headers:
+Now imagine 50 clients doing similar:
+- 50 deposits (each client, one-time)
+- 50 openChannels (each client, one-time per channel)
+- **1 batched settle** covering vouchers from all 50 clients (per batch window)
+- 50 closeChannels (each client, one-time when done)
 
-- `WWW-Authenticate: Payment <challenge>` on 402 (in addition to the structured body mech-prepay already returns).
-- `Payment-Credential: <base64 credential>` on the retry (in addition to the body-based signature).
-- `Payment-Receipt: <base64 receipt>` on 200.
-
-The credential can either be a voucher (EIP-712 over `{channelId, cumulativeAmount}`) or a per-request signature. For full MPP-session compatibility we'd need the voucher form. For just being callable, the per-request signature form is enough if we document it.
-
-### 7.3 If we want true MPP session semantics, layer on MPP-session contracts later
-
-If voucher-based cumulative authorization matters at that point (because clients want a single signature for many requests, or because audit demands cumulative monotonicity enforced on-chain), this is the moment to add `MppEscrow`, `BalanceTrackerMppSession`, and the matching mech + factory from `mpp_session_spec.md`. The marketplace's registry pattern lets that family coexist with the existing pre-deposit family at no extra cost beyond the new contracts themselves.
-
-### 7.4 If we want x402-protocol compatibility (a parallel path)
-
-For x402 specifically (much larger ecosystem at ~14k services), the upgrade is the `BalanceTrackerX402` family from `x402_spec.md`. It can ship in parallel with mech-prepay; the registry routes EIP-3009 paymentData to BalanceTrackerX402 and empty paymentData to whichever default tracker we point at.
-
----
-
-## 8. What we need to build, summary
-
-| Layer | File | Change | Effort |
-|-------|------|--------|--------|
-| Contract | `contracts/mechs/token/BalanceTrackerFixedPriceToken.sol` | Add `withdrawRequester(uint256)` (X1) | ~10 lines + audit |
-| Contract (alt) | `contracts/mechs/token/BalanceTrackerFixedPriceTokenWithdraw.sol` | New subclass with the same function (X2) | ~30 lines + audit + migration |
-| Mech | `mech/packages/valory/skills/task_execution/handlers.py` | Replace 402 body with structured deposit instructions | ~30 lines |
-| Mech (optional) | same | New `GET /well-known/mech-prepay` discovery route | ~30 lines |
-| Client | `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/http_request.py` | New behaviour for HTTP signed-request path | ~300-500 lines + tests |
-| Client | `mech-interact/.../skill.yaml` | Add `mech_http_url`, `prefer_http_path` params | ~5 lines |
-| Docs | `docs/mech_prepay_spec.md` | This document | done |
-
-Out-of-scope but trivial later additions:
-- OpenAPI doc for MPPscan listing (~50 lines, no code change)
-- MPP-shaped 402 headers (~30 lines in `handlers.py`)
-- x402 contract family (existing spec, separate workstream)
-- MPP session contract family (existing spec, separate workstream)
+Per-batch settlement work for the mech: 1 transaction. That is the scaling property.
 
 ---
 
-## 9. Open questions
+## 6. Full end-to-end changes required
 
-1. **X1 vs X2 for the withdraw function.** Modify the live BalanceTrackerFixedPriceToken (X1, simpler, requires care during deploy) or deploy a new subclass + migrate (X2, no in-place mutation, more deploy work). Pin one.
-2. **Quote pricing policy.** Same open item as the other two specs: client pays listed `maxDeliveryRate` (mech absorbs marketplace fee) or grossed-up (client pays the fee on top). Recommend listed price for v1 to keep client SDKs simple.
-3. **Settlement race mitigation strength.** Do we accept the race fully (bounded by maxRate, document and move on), or add a "pending settlement" off-chain reservation in the mech behaviour that gates `withdrawRequester` by blocking new requests once the reservation matches the balance?
-4. **Response delivery channel.** Keep using on-chain Deliver event polling (works today, but requires the client to listen on-chain) or switch to HTTP `GET /fetch_offchain_info` polling that the mech already supports? Recommend HTTP for new HTTP-path clients; on-chain stays as a fallback.
+This section lists every change across the stack. No code, just what changes where.
+
+### 6.1 Contract side (autonolas-marketplace repo)
+
+**New file**: `contracts/mechs/token/prepay/BalanceTrackerFixedPriceTokenChannel.sol`
+
+A subclass of `BalanceTrackerFixedPriceToken`. Adds channel custody and voucher settlement entirely inside the BalanceTracker. No separate escrow contract.
+
+What it adds:
+- Per-channel storage struct (payer, mech, deposit, settled, expiry, closeRequestedAt, finalized) keyed by channelId
+- Per-requester encumbered total mapping
+- Five new external functions: `openChannel`, `settleByVoucher` (marketplace-only), `closeChannel`, `requestClose`, `forceClose`
+- EIP-712 domain and voucher digest helpers
+- A set of custom errors covering channel lifecycle states and voucher validation
+- A set of events: `ChannelOpened`, `VoucherSettled`, `ChannelCloseRequested`, `ChannelClosed`
+- `CLOSE_TIMEOUT` constant (24 hours recommended)
+
+What it inherits unchanged from the base:
+- `deposit`, `depositFor`, `withdrawRequester` (free balance still works)
+- `adjustMechRequesterBalances` (legacy per-request-signature path coexists)
+- `processPaymentByMultisig`, fee logic, drain
+
+**Modified file**: `contracts/MechMarketplace.sol`
+
+One new function `settleBatchByVouchers(PrepayVoucherInput[])` that wraps each voucher's settlement in try/catch. Successful settlements get per-requester karma + counter updates; failed ones emit `VoucherSettlementFailed` and the loop continues. After the loop, aggregate karma + counter updates for the mech.
+
+New event: `MarketplaceVoucherSettlement`.
+
+No changes to any existing marketplace function. The new entry is strictly additive.
+
+**Modified file**: `contracts/OlasMech.sol`
+
+One new forwarder function `settleBatchByVouchers` (onlyOperator) that calls the marketplace.
+
+**New file**: `contracts/interfaces/IBalanceTrackerChannel.sol`
+
+New interface variant exposing `settleByVoucher` and the channel-lifecycle entry points. Or extend the existing IBalanceTracker.
+
+**Registration call (one-time, by marketplace owner)**:
+- Register the new BalanceTracker against the new payment type `keccak256("MECH_PREPAY_CHANNEL_USDC")`
+- Mechs that want the new behavior deploy with this payment type
+- Existing mechs continue working unchanged
+
+**Audit boundary**: one new contract. The marketplace and OlasMech changes are small forwarders that audit alongside their existing functions.
+
+Effort estimate: ~500 lines of Solidity across contracts, plus an audit cycle.
+
+### 6.2 Mech side (mech repo)
+
+**Modified file**: `mech/packages/valory/skills/task_execution/handlers.py`
+
+Two new HTTP routes added to `MechHttpHandler`:
+
+- `POST /open_channel_hint`: client asks "what do I need to know to open a channel with you?" Mech responds with channelId derivation parameters, recommended deposit, EIP-712 domain. Used by client SDKs to construct an `openChannel` transaction.
+- `POST /submit_voucher`: voucher-bearing request submission. Body contains `tool`, `prompt`, IPFS data, and voucher `{channelId, cumulativeAmount, signature}`. Mech verifies the EIP-712 voucher off-chain, checks the cumulative is strictly greater than the stored value, checks cumulative is within the channel deposit, then enqueues the task and returns 200.
+
+The existing `POST /send_signed_requests` route (per-request signatures) stays for the legacy mech-prepay path. The existing `GET /fetch_offchain_info` polling endpoint stays unchanged.
+
+A new helper `_verify_voucher` ports `wildcard/server/src/session/voucher.py:verify_voucher` into the mech behaviour. EIP-712 typed data recover with `eth_account.recover_message`, expects recovered signer to equal channel's payer.
+
+**Modified file**: `mech/packages/valory/skills/task_submission_abci/behaviours.py`
+
+New behaviour branch that:
+- Reads pending voucher acceptance log from `synchronized_data`
+- Groups by `(requester, mech)`, keeps only the latest voucher per pair
+- Builds the `PrepayVoucherInput[]` array
+- Submits via `OlasMech.settleBatchByVouchers`
+
+Coexists with the existing per-request signature batching. Mech operator chooses per batch which path to use (configurable; usually voucher path once available).
+
+**Modified module**: synchronized_data slot definitions
+
+New slots:
+- Per active channel: `channelId, payer, mech, deposit, expiry, highestAcceptedCumulative, lastSettledOnChain, latestVoucherSig`
+- Pending voucher acceptance log: list of `(request_id, channel_id, cumulative, accepted_at)`
+
+Survives agent restarts and is consistent across the agent ensemble. Cleared when a channel closes.
+
+**New module**: optional Postgres adapter
+
+For production deployments, a Postgres-backed delivery store. Schema as documented in Section 2.D. Adapter writes one row per accepted request (when the mech finishes serving), and updates the `settled_on_chain_at` column after a batch settles. Reads support the existing `GET /fetch_offchain_info` polling endpoint.
+
+For development / single-agent deployments, synchronized_data alone is sufficient. The Postgres layer is purely for durability and queryability.
+
+Effort estimate: ~500 lines of new behaviour + handler code, ~150 lines of Postgres adapter.
+
+### 6.3 mech-client (the Python CLI / library)
+
+**Already there**: mech-client has the off-chain HTTP path built in. `mech_client/services/marketplace_service.py:243-356` defines `_send_offchain_request` which signs request data, POSTs to `/send_signed_requests`, and polls for the result via `OffchainDeliveryWatcher`. The `--use-offchain` CLI flag at `mech_client/cli/commands/request_cmd.py:69-71` exposes this to users. `use_offchain implies use_prepaid`.
+
+**What to add**:
+
+A parallel `_send_voucher_request` method that:
+- Discovers the mech HTTP endpoint (auto from on-chain metadata, or from config)
+- On the first request to a given mech: fetches the channel-open hint via `POST /open_channel_hint`, submits an `openChannel` transaction (or asks the user to confirm via CLI prompt)
+- Tracks local channel state (per-mech, per-active-channel) in a local file (e.g. `~/.mech-client/channels.json`)
+- Signs the next voucher with cumulative bumped, POSTs to `/submit_voucher`
+- On 402 with `scheme: "olas-prepay-voucher"`: reads the voucher hint body, signs the next voucher, retries
+- Polls for result via the existing `OffchainDeliveryWatcher`
+
+New CLI commands:
+- `mech-client open-channel --mech <addr> --deposit <amount> --expiry <hours>`
+- `mech-client close-channel --channel-id <id>`
+- `mech-client request-close --channel-id <id>` (the safety-valve flow)
+- `mech-client withdraw --amount <X>` (the free-balance withdraw)
+
+Existing CLI behavior unchanged. `--use-offchain` keeps using the per-request signature path. New `--use-voucher` flag opts into the voucher path.
+
+Effort estimate: ~400 lines of new service code + CLI command wiring.
+
+### 6.4 mech-interact (the ABCI skill used by Trader, Market-Creator, MemeOoorr, etc.)
+
+**Today's flow**: mech-interact uses the on-chain `MechMarketplace.request()` path exclusively. No HTTP off-chain branch. Per-request on-chain submission. Confirmed via `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/request.py`.
+
+**What to add**:
+
+A new behaviour `MechVoucherChannelBehaviour` (or extension of `MechRequestBehaviour`) that:
+- Checks `synchronized_data` for an active channel with the priority mech
+- If none: builds an approve + depositFor + openChannel multisend, submits, persists the channel id
+- For the request: signs the next voucher with the safe key (EIP-712 typed data), POSTs to the mech's `/submit_voucher` endpoint via the existing AEA http connection
+- On 402 with voucher hint: re-sign with the corrected cumulative and retry
+- Updates `synchronized_data.channel_state` after each accepted voucher
+- The response behaviour polls the mech's HTTP endpoint (or stays with on-chain Deliver-event polling as a fallback)
+
+New params in `skill.yaml`:
+- `mech_http_url`: explicit override of the mech's HTTP endpoint (else auto-discover from on-chain metadata)
+- `prefer_voucher_path`: opt-in flag to use the new path
+- `default_channel_deposit`: how much to lock per channel (e.g. $1.00)
+- `default_channel_expiry_hours`: default 24
+
+The existing on-chain request behaviour stays untouched. Services that don't opt in keep working the same way.
+
+A new closure behaviour is also needed for graceful service shutdown: at termination, close any active channels to recover residual deposit.
+
+Effort estimate: ~400 lines of new behaviour code in mech-interact, plus tests.
+
+### 6.5 Do we need a separate package?
+
+Two genuine questions here:
+
+**1. For Valory's own clients (mech-client, mech-interact)**: no separate package. Both libraries already exist; we add a voucher branch to each.
+
+**2. For third-party HTTP clients that aren't Python**: a thin TypeScript/JavaScript package is worth maintaining. Use cases:
+- Browser-based agents
+- Node.js / TypeScript services that want to call mechs without running open-autonomy
+- Any client outside the Valory Python stack
+
+What it would contain:
+- ChannelId derivation (matches the contract's keccak256 layout)
+- EIP-712 typed data signing for `PrepayVoucher`
+- HTTP wire helpers: POST `/open_channel_hint`, `/submit_voucher`, GET `/fetch_offchain_info`
+- 402 challenge parsing and retry logic
+- Local channel state management (in-memory or pluggable storage)
+
+Suggested name: `@valory/olas-prepay-client` (TypeScript, ~400-600 lines).
+
+This package is NOT blocking for v1. mech-client and mech-interact cover all current Valory consumers. The TypeScript package is needed when external HTTP agents (the x402-scan-style ecosystem clients, browser apps, partner integrations) want to consume Olas mechs. Ship in v1.1 once there's a concrete external consumer.
+
+**3. Future MPP protocol compatibility**: as Section 1 noted, going fully MPP-compatible later means adding an OpenAPI doc, MPP-shaped HTTP headers, and a TypeScript adapter that speaks the MPP wire. If we ship `@valory/olas-prepay-client` for use case #2 above, that same package can grow into the MPP-compatibility layer when needed. So the answer to "do we need a separate package" depends on whether we want non-Python clients to reach our mechs.
+
+Recommended sequencing:
+- v1: ship contracts + mech + mech-client + mech-interact. No TypeScript package yet.
+- v1.1: add `@valory/olas-prepay-client` when a non-Python consumer shows up, or when MPP-protocol compatibility becomes a priority.
 
 ---
 
-## 10. References
+## 7. Contract change summary
 
-- `docs/x402_spec.md`, the x402 Coinbase-compatible alternative
-- `docs/mpp_session_spec.md`, the MPP session alternative
-- `docs/x402_vs_mpp.md`, decision guide comparing the two main alternatives
-- `contracts/BalanceTrackerBase.sol`, the base class we extend
-- `contracts/mechs/token/BalanceTrackerFixedPriceToken.sol`, where withdraw lands
-- `mech/packages/valory/skills/task_execution/handlers.py`, the off-chain HTTP handler
-- `mech/packages/valory/skills/task_submission_abci/behaviours.py`, the batched settlement
-- `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/request.py`, the client side that needs the HTTP branch
-- [MPPscan discovery spec](https://www.mppscan.com/discovery/spec), for future MPPscan listing
-- [x402scan register-origin](https://www.x402scan.com/register), for future x402scan listing
+| Component | Change | Notes |
+|-----------|--------|-------|
+| `BalanceTrackerFixedPriceTokenChannel` | NEW subclass | Channels + voucher settlement, ~300 lines |
+| `MechMarketplace.sol` | Add `settleBatchByVouchers` + event | Per-voucher try/catch, additive |
+| `OlasMech.sol` | Add `settleBatchByVouchers` forwarder | `onlyOperator` |
+| `IBalanceTrackerChannel.sol` | New interface | Or extend the existing IBalanceTracker |
+| `BalanceTrackerBase` | None | All hooks present |
+| `BalanceTrackerFixedPriceToken` | None | Parent class, unchanged |
+| Karma | None | Receives per-requester + aggregate updates |
+| Fee logic (`processPaymentByMultisig`) | None | Operates on `mapMechBalances` as today |
+| Existing payment families (Native, Token, NVM) | None | All untouched, coexist via registry |
+| `BalanceTrackerX402` (if ever shipped) | None | Coexists, different payment type |
+| `MppEscrow` (if ever shipped) | None | Coexists, different payment type |
+
+The existing marketplace and OlasMech keep all their existing functions. The voucher path is strictly additive.
+
+---
+
+## 8. Known constraints
+
+What remains, honestly:
+
+- **Channel deposit upfront**. Locking USDC in a channel is the price of race elimination. For one-shot clients, the legacy per-request flow is cheaper.
+- **One channel per `(payer, mech)` pair**. A client talking to N mechs opens N channels.
+- **Channel expiry**. Pick a window the mech can settle within. Recommended 24 hours.
+- **No on-chain per-request records**. Mech-side Postgres is the source of truth for delivery details. Subgraph indexers watching `Deliver` events won't see voucher-path traffic.
+- **Mech operator submits batches**. Same trust model as today's mech Safe ops. No new keys.
+- **Strict monotonicity on-chain**. Two concurrent settlement attempts for the same cumulative: one wins, the other emits `VoucherSettlementFailed`. Mech reconciles off-chain.
+
+What's NOT a constraint anymore:
+
+- ~~Settlement race~~ eliminated by encumbrance
+- ~~Atomic batch revert~~ eliminated by per-voucher try/catch
+- ~~Need on-chain per-request records~~ replaced by Postgres-backed mech-side store
+- ~~Per-requester-only batching~~ multi-requester is built into `settleBatchByVouchers`
+
+---
+
+## 9. Comparison vs MPP session
+
+Behaviorally identical after this spec ships. Differences are structural and external-compatibility:
+
+| Aspect | This spec | MPP session |
+|--------|-----------|-------------|
+| Custody contract | BalanceTracker (existing) | MppEscrow (new) |
+| Channel state location | `mapChannels` inside BalanceTracker | `channels` inside MppEscrow |
+| Voucher EIP-712 domain | `Olas Mech Prepay Channel` | `Tempo Stream Channel` (or equivalent) |
+| Cumulative monotonicity | Enforced on-chain | Enforced on-chain |
+| Settlement race | Eliminated | Eliminated |
+| Atomic batch revert | Eliminated (try/catch) | Not addressed in MPP spec |
+| Per-request on-chain records | None (Postgres) | None |
+| Audit boundary | 1 contract | 2 contracts (escrow + tracker) |
+| MPP protocol compatibility | None | Partial (Valory extension of session intent on EVM) |
+| Discoverable on MPPscan | No without OpenAPI add-on | No without OpenAPI add-on |
+
+Given that MPP protocol compatibility isn't a goal for v1, this spec is the cleaner path. Same outcome, smaller audit surface, no MPP terminology to defend.
+
+---
+
+## 10. Testing strategy
+
+### 10.1 Contract tests
+
+1. **Happy path**: open → 5 vouchers off-chain → batched settle → close. Balances correct end-to-end.
+2. **Encumbrance enforcement**: open channel for 500_000, try `withdrawRequester(amount > free)`, expect revert.
+3. **Voucher monotonicity**: settle cumulative=100, try cumulative=100 again, expect `NonMonotonicCumulative` event from try/catch.
+4. **Exceeds deposit**: voucher with `cumulative > channel.deposit`, expect `ExceedsDeposit` event.
+5. **Channel expiry**: voucher submitted after expiry, expect `VoucherExpired` event.
+6. **Forged signature**: voucher signed by attacker, not payer, expect `InvalidVoucherSignature` event.
+7. **Finalized channel**: settle after `closeChannel` called, expect `ChannelFinalized` event.
+8. **`forceClose` timeout**: try `forceClose` before `CLOSE_TIMEOUT` elapsed, expect revert.
+9. **Fail-soft batch**: 5 vouchers, 1 expired. 4 succeed, 1 emits failure event. Transaction completes. `mapMechBalances` reflects only the 4.
+10. **Multi-requester**: 50 vouchers from 50 different requesters in one batch. All settle independently.
+11. **Fee accounting**: `processPaymentByMultisig` works on accumulated `mapMechBalances` after voucher settlement.
+12. **Reentrancy**: malicious token reenters during `transfer`, blocked by `_locked`.
+13. **Multi-mech**: Alice opens channels with Mech A and Mech B, both settle independently, encumbrance tracks each.
+
+### 10.2 End-to-end integration
+
+1. Hardhat fork with USDC + new contracts deployed
+2. mech-client `--use-voucher`: opens channel, sends 5 requests, mech batches, channel closes
+3. Verify events: `ChannelOpened`, 5 `VoucherSettled`, `MarketplaceVoucherSettlement`, `ChannelClosed`
+4. Verify Postgres has 5 rows with correct ipfs hashes
+5. Verify final `mapRequesterBalances[client]` includes the refunded residual
+
+### 10.3 Adversarial tests
+
+1. **Race elimination**: client `withdrawRequester` after voucher acceptance, before settle. Withdraw bounded to free balance. Mech successfully settles the encumbered amount.
+2. **Fail-soft**: 100-voucher batch with 10 bad vouchers randomly placed. 90 settle, 10 emit failure events. Transaction succeeds.
+
+---
+
+## 11. References
+
+- `docs/mpp_session_spec.md`, the structural alternative using a separate escrow contract
+- `docs/x402_spec.md`, the per-request EIP-3009 alternative
+- `docs/x402_vs_mpp.md`, decision guide between the two ecosystem options
+- `wildcard/server/src/session/store.py`, the Postgres-backed channel store this spec mirrors
+- `wildcard/server/src/session/voucher.py`, the EIP-712 voucher verification reference
+- `mech-client/mech_client/services/marketplace_service.py`, the existing HTTP off-chain integration that gets the voucher branch
+- `mech-interact/packages/valory/skills/mech_interact_abci/behaviours/request.py`, the on-chain-only behaviour that gets the new voucher branch
+- `mech/packages/valory/skills/task_execution/handlers.py`, the off-chain HTTP handler that gets the new voucher routes
+- `mech/packages/valory/skills/task_submission_abci/behaviours.py`, the batched settlement behaviour that gets the new voucher-path branch
+- `contracts/MechMarketplace.sol`, the marketplace that gets the new `settleBatchByVouchers` entry
+- `contracts/mechs/token/BalanceTrackerFixedPriceToken.sol`, the parent class of the new BalanceTracker subclass
+- [MPPscan discovery spec](https://www.mppscan.com/discovery/spec), for the optional future MPPscan listing
