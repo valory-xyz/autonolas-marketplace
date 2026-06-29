@@ -315,7 +315,7 @@ All HTTP steps are new. The on-chain batch cycle reuses the existing `deliverMar
 | Step | Layer | Description |
 |------|-------|-------------|
 | **1** | HTTP, off-chain | Client sends `POST /predict {tool, prompt}` to Mech. No `Payment-Credential` header. |
-| **2** | Mech, off-chain | Mech generates a cost estimate. For fixed-price mechs: `quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)`. Queries `MechMarketplace.fee()`. |
+| **2** | Mech, off-chain | Mech generates a cost estimate. For fixed-price mechs under Policy A: `quote = maxDeliveryRate` (mech absorbs the marketplace fee). The mech still queries `MechMarketplace.fee()` so the `processPaymentByMultisig` carve-out at settlement is recorded against the live bps. |
 | **3** | HTTP, off-chain | Mech returns HTTP 402 with `WWW-Authenticate: Payment` header. Body includes `method = "session"`, `escrow = 0xMppEscrow`, `chainId`, `payee = 0xBalanceTrackerMppSession`, `token = USDC address`, `maxDeposit`, plus `methodDetails: {channelId, currentCumulative}` if an active channel exists. |
 | **4** | Client, off-chain | If no active channel: client calls `MppEscrow.open(payee, token, deposit, salt, authorizedSigner)`. **This is one on-chain transaction**. Pulls `deposit` USDC from client into escrow. |
 | **5** | Client, off-chain | Client signs voucher `{channelId, cumulative = prev + quote}` via EIP-712. Also signs `hash(requestData)` for the mech delivery signature. |

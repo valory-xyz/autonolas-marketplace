@@ -24,7 +24,7 @@
 
 8. **Three-contract set** — the spec now correctly requires `BalanceTrackerX402USDC`, `MechFixedPriceTokenX402USDC`, and `MechFactoryFixedPriceTokenX402USDC` (Section 3.1 "Required contract set").
 
-9. **Quote generation** — Section 3.3 correctly distinguishes fixed-price (deterministic `maxDeliveryRate + fee`, no tool execution) from NVM/dynamic (future scope).
+9. **Quote generation** — Section 3.3 ships Policy A: fixed-price quote is `maxDeliveryRate` (mech absorbs the marketplace fee), no tool execution needed. NVM/dynamic-price mechs (future scope) get the same Policy A treatment of the computed estimate (no fee inflation). Section 3.3 also describes Policy B for completeness but the v1 spec is consistently Policy A across §4, §5, and the MPP session spec.
 
 10. **x402 protocol conformance** — Section 3.5 defines exact header schemas (`X-Payment`, `X-Payment-Response`, 402 body) aligned with the Coinbase x402 standard.
 

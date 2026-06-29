@@ -247,7 +247,7 @@ All HTTP steps are new. The on-chain batch cycle (steps 9-11) reuses the existin
 | Step | Layer | Description |
 |------|-------|-------------|
 | **1** | HTTP — off-chain | Client sends `POST /predict {tool, prompt}` to Mech. No `X-Payment` header present. |
-| **2** | Mech — off-chain | Mech generates a cost estimate. For fixed-price mechs: `quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)` — no tool execution needed. For NVM/dynamic mechs (future): run tool with `delivery_rate=0` to get cost estimate, then inflate with fee. Queries `MechMarketplace.fee()` for current fee bps. |
+| **2** | Mech — off-chain | Mech generates a cost estimate. For fixed-price mechs under Policy A: `quote = maxDeliveryRate` (mech absorbs the marketplace fee). No tool execution needed. For NVM/dynamic mechs (future): run tool with `delivery_rate=0` to get cost estimate, return it as-is — Policy A does not inflate. The mech still queries `MechMarketplace.fee()` so the `processPaymentByMultisig` carve-out at step 11 is recorded against the live bps. |
 | **3** | HTTP — off-chain | Mech returns HTTP 402 with JSON body: `{ "x402Version": 1, "accepts": [PaymentRequirements], "error": "Payment required" }`. The `PaymentRequirements` includes `scheme: "exact"`, `network`, `maxAmountRequired: quote`, `payTo: BalanceTrackerX402USDC`, `asset: USDC address`, `maxTimeoutSeconds: 900`, and `extra: { name, version }` for EIP-712 domain. |
 | **4** | Client — off-chain | Client's x402 library (`genai/connections/x402`) selects a matching `PaymentRequirements` entry, calls `exact.sign_payment_header()` which: generates a random 32-byte nonce, sets `validAfter = now - 60s` / `validBefore = now + maxTimeoutSeconds`, signs the EIP-712 `TransferWithAuthorization` typed data, and base64-encodes the result as a `PaymentPayload`. Client also signs `hash(requestData)` for the mech request signature. |
 | **5** | HTTP — off-chain | Client sends `POST /predict {tool, prompt}` with `X-Payment` header (base64-encoded `PaymentPayload`) and the request signature in the body. |
@@ -271,7 +271,7 @@ All four request paths coexist in the mech with no breaking changes to existing 
 | Condition | Flow |
 |-----------|------|
 | `X-Payment` header present | x402 flow — verify in-process → execute → HTTP 200 |
-| No headers, no `delivery_rate` | x402 quote — return deterministic quote (`maxDeliveryRate + fee`) → HTTP 402 |
+| No headers, no `delivery_rate` | x402 quote — return deterministic quote (Policy A: `quote = maxDeliveryRate`) → HTTP 402 |
 | `delivery_rate` in body | Existing off-chain flow (unchanged) |
 | On-chain event | Existing on-chain flow (unchanged) |
 
@@ -379,9 +379,9 @@ mechMarketplace.setMechFactoryStatuses(
 - Return `X-Payment-Response` header on 200 responses with settlement status
 
 **Quote Generation**
-- For fixed-price mechs (including x402): apply the quote policy chosen in Section 3.3 (Policy A `quote = maxDeliveryRate`, or Policy B `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`). No tool execution needed.
-- For NVM/dynamic mechs (future scope): run tool with `delivery_rate=0` to get cost estimate, then apply the same policy.
-- Query `MechMarketplace.fee()` for current fee bps.
+- For fixed-price mechs (including x402) under Policy A: `quote = maxDeliveryRate` (mech absorbs the fee). No tool execution needed.
+- For NVM/dynamic mechs (future scope): run tool with `delivery_rate=0` to get cost estimate, return it as-is — Policy A does not inflate.
+- Query `MechMarketplace.fee()` for current fee bps so the `processPaymentByMultisig` carve-out at settlement is recorded against the live value.
 
 **In-Process Verification (Facilitator)**
 - `POST /verify` — decode `X-Payment` header, validate EIP-3009 signature, check client on-chain USDC balance >= quote, check nonce not in local set, check `validBefore` is in future. Return `{ valid, reason }`.
