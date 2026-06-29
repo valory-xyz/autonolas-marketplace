@@ -60,6 +60,8 @@ Chain-specific variants exist under `mechs/native/celo/`, `mechs/token/usdc/`, a
 
 **x402 Payment (planned)** — a fourth payment model adding x402 protocol compatibility via EIP-3009 `transferWithAuthorization` for USDC. New contracts (`BalanceTrackerX402USDC`, `MechFixedPriceTokenX402USDC`, `MechFactoryFixedPriceTokenX402USDC`) under `mechs/token/x402/`. Spec: `docs/x402_spec.md`. Implementation plan: `docs/x402_implementation_plan.md`. Key design: overrides `_adjustInitialBalance` in `BalanceTrackerBase` to decode EIP-3009 paymentData instead of using `transferFrom`. Zero changes to MechMarketplace or OlasMech.
 
+**Off-chain marketplace migration (planned)** — rollout plan for moving mech requests off the public chain rails while keeping them billable and auditable. Two phases plus an optional third. Spec: `docs/marketplace_api_spec.md` (marketplace-side API, structured 402, commit-reveal privacy, mech-side write path into the data lake). Companion sub-phase 2 covers analytics: pipeline spec `docs/mech_analytics_etl_spec.md` and table-schema reference `docs/mech_analytics_etl_schema.md` (six metrics tables, three Wildcard API endpoints under `/v1/metrics/...`).
+
 **Karma** (proxy-upgradeable) — reputation system tracking per-mech and per-requester-mech karma scores. Only whitelisted marketplaces can update karma.
 
 **KarmaProxy** — upgradeable proxy with initialization for the Karma contract.

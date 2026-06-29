@@ -1,6 +1,6 @@
 # Mech Analytics ETL Service — Spec
 
-Phase 1 sub-phase 2 of the mech-prepay migration. This document covers the Analytics ETL, the Metrics Postgres, and the Wildcard API. It pairs with `docs/marketplace_api_spec.md`, which owns the on-chain and HTTP marketplace surface that produces the rows this ETL consumes.
+Phase 1 sub-phase 2 of the off-chain marketplace migration. This document covers the Analytics ETL, the Metrics Postgres, and the Wildcard API. It pairs with `docs/marketplace_api_spec.md`, which owns the on-chain and HTTP marketplace surface that produces the rows this ETL consumes.
 
 Written for any reviewer (engineer, PM, ops). Assumes you have read at most the TL;DR of `marketplace_api_spec.md`.
 
@@ -52,7 +52,7 @@ Net effect: one place computes metrics, every consumer just reads the answer.
 
 Three pipelines. Each rebuilds the same wheel. Each is slow (IPFS gateway latency dominates). Each does a fuzzy `questionTitle` join because the data sources do not carry market_id consistently.
 
-Worse, once Phase 2 of mech-prepay flips the default to offchain, the marketplace subgraph stops populating `ParsedRequest.prompt`, `ParsedRequest.tool`, and the IPFS content fields. All three pipelines break.
+Worse, once Phase 2 of the migration flips the default to offchain, the marketplace subgraph stops populating `ParsedRequest.prompt`, `ParsedRequest.tool`, and the IPFS content fields. All three pipelines break.
 
 ### The after picture
 

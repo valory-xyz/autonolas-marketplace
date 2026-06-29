@@ -1,8 +1,8 @@
-# Marketplace API Spec — Mech Prepay Implementation Plan
+# Marketplace API Spec — Off-chain Migration Implementation Plan
 
 Two phases plus an optional third. Phase 1 builds every piece of code we need. Phase 2 rolls it out without leaving an analytics gap. Phase 3 is deferred scaling.
 
-This document is the marketplace-side API and rollout spec for the mech-prepay workstream. The analytics ETL sub-phase has its own document at `docs/mech_analytics_etl_spec.md`; the x402 payment family proposal lives in `docs/x402_spec.md`.
+This document is the marketplace-side API and rollout spec for moving mech requests off the public chain rails. The analytics ETL sub-phase has its own document at `docs/mech_analytics_etl_spec.md`; the x402 payment family proposal lives in `docs/x402_spec.md`.
 
 ## Phases at a glance
 
