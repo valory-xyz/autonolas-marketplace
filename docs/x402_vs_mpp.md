@@ -85,7 +85,7 @@ MPP session       :  2 transactions  (open + close, regardless of N)
                      under one channel)
 ```
 
-Worked numbers, assuming `gas_per_tx = 200000` and per-request quote = 0.0102 USDC:
+Worked numbers, assuming `gas_per_tx = 200000` and per-request quote = 0.01 USDC (Policy A at 15% fee per governance proposal 01):
 
 | N requests | x402 txs | MPP session txs | When MPP wins |
 |------------|----------|-----------------|---------------|
@@ -265,7 +265,7 @@ For the Mech Marketplace v1, the practical sequence is:
 - Mech operators can opt in by deploying an MPP mech alongside their x402 mech.
 - This avoids paying for an audit and operational complexity that may not earn its keep.
 
-**Skip both** if the use case is purely internal Olas traffic. The existing pre-deposit `BalanceTrackerFixedPriceToken` flow is fine for known requesters with predictable usage; it batches natively, has no deposit-lock for clients (they already deposit), and has zero new contracts.
+**Skip both** if the use case is purely internal Olas traffic. The existing pre-deposit `BalanceTrackerFixedPriceToken` flow is fine for known requesters with predictable usage; it batches natively, has no deposit-lock for clients (they already deposit), and has zero new contracts. This third option is now fully specced as `docs/marketplace_api_spec.md` — it's the off-chain marketplace migration that ships HTTP-native API access on the existing token rail (structured 402, signed requests, mech-side write path into the analytics data lake). x402 and MPP are *additive* payment families that can be deployed on top of the same rail once the migration is stable, not competing v1 options. The three-way relationship: the migration is the rail, x402/MPP are alternative payment surfaces a mech operator can register against the marketplace's `mapPaymentTypeBalanceTrackers`.
 
 ---
 
@@ -294,6 +294,7 @@ These do not have answers yet, and answering them might shift the recommendation
 
 ## 10. References
 
+- `docs/marketplace_api_spec.md`, the off-chain marketplace migration that is the rail x402 and MPP both ride on (the "Skip both" option from §7 in spec form). This document is what defines the v1 HTTP-native API access path; x402 and MPP are additive payment families on top of it.
 - `docs/x402_spec.md`, full x402 design
 - `docs/x402_implementation_plan.md`, phased x402 build plan + remaining open items
 - `docs/x402scan_integration.md`, x402 ecosystem discovery

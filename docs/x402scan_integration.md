@@ -306,7 +306,7 @@ When `facilitator_url` is `None`, the behaviour falls back to local signature ve
   "accepts": [{
     "scheme": "exact",
     "network": "eip155:8453",
-    "maxAmountRequired": "10200",
+    "maxAmountRequired": "10000",
     "payTo": "0xBalanceTrackerX402USDC",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "maxTimeoutSeconds": 900,
@@ -330,7 +330,7 @@ When using an external facilitator, add Bazaar metadata to the 402 response for 
   "accepts": [{
     "scheme": "exact",
     "network": "eip155:8453",
-    "maxAmountRequired": "10200",
+    "maxAmountRequired": "10000",
     "payTo": "0xBalanceTrackerX402USDC",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "maxTimeoutSeconds": 900,

@@ -1,8 +1,9 @@
 # x402 Integration — Key Security Findings
 
-**Date**: 2026-03-18
+**Date**: 2026-03-18 (last refreshed 2026-06-29)
 **Branch**: `402` of `valory-xyz/autonolas-marketplace`
 **Status**: Pre-implementation review (contracts not yet written)
+**Line numbers in this document** reference `MechMarketplace.sol` as of commit `6b26aa5` on this branch. They may have drifted on `main` (e.g. `getRequestId` is at line 883 on `main` at time of writing). Re-check against the target SHA before quoting.
 
 ## Findings Summary
 
@@ -75,17 +76,12 @@ marketplaceFee = (balance * fee + (MAX_FEE_FACTOR - 1)) / MAX_FEE_FACTOR;
 ```
 When `fee > 0` and `balance >= 1`, `marketplaceFee` is always `>= 1`. Additionally, fees are calculated on accumulated `mapMechBalances[mech]` (after multiple deliveries), not per-request — so small individual delivery rates aggregate before the fee is taken.
 
-## N-3: Multi-Mech Isolation Mechanism Mis-Identified in Spec
+## ~~N-3: Multi-Mech Isolation Mechanism Mis-Identified in Spec~~ (Resolved)
 
-Spec Section 3.7 states: "Each mech has its own `BalanceTrackerX402USDC` address (the `to` field in the EIP-3009 authorization)."
+**Resolved.** The current `x402_spec.md` §3.7 ("Multi-mech isolation") already describes the shared tracker correctly: `BalanceTrackerX402USDC` is shared per payment type, isolation comes from USDC nonce consumption and request-signature binding. The finding remains here as a struck-through record of the historical mismatch.
 
-**This is incorrect.** There is ONE `BalanceTrackerX402USDC` per payment type, shared by ALL x402 mechs (`mapPaymentTypeBalanceTrackers[paymentType]` at MechMarketplace line 811). The `to` field in every x402 EIP-3009 authorization is the SAME address.
-
-Cross-mech replay is still prevented, but by different mechanisms:
-1. **USDC nonce consumption**: Each `transferWithAuthorization` nonce is one-time use at the USDC contract level. Once consumed, it cannot be replayed by any mech.
-2. **Request signature binding**: The `requestId` includes the mech address (`getRequestId` at line 232: `abi.encode(address(this), mech, requester, ...)`). The requester's signature is verified against this requestId. A different mech cannot forge a valid requestId for the same request.
-
-**Recommendation**: Fix Section 3.7 to describe the actual isolation mechanism.
+Original text:
+> Spec Section 3.7 states: "Each mech has its own `BalanceTrackerX402USDC` address (the `to` field in the EIP-3009 authorization)." This is incorrect. There is ONE `BalanceTrackerX402USDC` per payment type, shared by ALL x402 mechs. Cross-mech replay is still prevented, but by USDC nonce consumption and by `requestId` including the mech address in `getRequestId`. (Cites "Issue C" in the original; the spec's current labeling is Issue 2 / Signature 2.)
 
 ## Overall Assessment
 
@@ -98,4 +94,4 @@ Three original findings were removed after code review:
 
 **Critical function to audit post-implementation**: `BalanceTrackerX402USDC._adjustInitialBalance()` — the only new on-chain logic touching user funds.
 
-**Full review**: See [README.md](README.md) for complete analysis including contract checklist, architecture assessment, and recommendations.
+**Full review**: See `docs/x402_pre_audit.md` for the complete analysis including contract checklist, architecture assessment, and recommendations.

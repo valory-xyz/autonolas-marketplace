@@ -58,7 +58,12 @@ npx hardhat coverage
 
 Chain-specific variants exist under `mechs/native/celo/`, `mechs/token/usdc/`, and `nevermined/token/usdc/`.
 
-**x402 Payment (planned)** — a fourth payment model adding x402 protocol compatibility via EIP-3009 `transferWithAuthorization` for USDC. New contracts (`BalanceTrackerX402USDC`, `MechFixedPriceTokenX402USDC`, `MechFactoryFixedPriceTokenX402USDC`) under `mechs/token/x402/`. Spec: `docs/x402_spec.md`. Implementation plan: `docs/x402_implementation_plan.md`. Key design: overrides `_adjustInitialBalance` in `BalanceTrackerBase` to decode EIP-3009 paymentData instead of using `transferFrom`. Zero changes to MechMarketplace or OlasMech.
+**Two candidate payment families being considered for a fourth payment model**, both for HTTP-native paid API access. The decision guide at `docs/x402_vs_mpp.md` frames the choice:
+
+- **x402 (planned)** — pay-per-request, signed EIP-3009 USDC authorization, no setup. One settlement transaction per request. New contracts (`BalanceTrackerX402USDC`, `MechFixedPriceTokenX402USDC`, `MechFactoryFixedPriceTokenX402USDC`) under `mechs/token/x402/`. Spec: `docs/x402_spec.md`. Implementation plan: `docs/x402_implementation_plan.md`. Key design: overrides `_adjustInitialBalance` in `BalanceTrackerBase` to decode EIP-3009 `paymentData` instead of using `transferFrom`. Zero changes to MechMarketplace or OlasMech. Bazaar/x402scan discoverability lives in `docs/x402scan_integration.md`.
+- **MPP session (planned alternative)** — channel-based, client opens once and signs off-chain EIP-712 vouchers per request, mech settles in batches. New contracts (`MppEscrow`, `BalanceTrackerMppSession`, `MechFixedPriceTokenMppSession`, `MechFactoryFixedPriceTokenMppSession`). Spec: `docs/mpp_session_spec.md`. Same `_adjustInitialBalance` extension hook as x402; the escrow contract holds funds between session open and close.
+
+Both specs assume the **15% marketplace fee** activated by governance proposal 01 (1500 bps). All worked examples in both specs use **quote Policy A** (mech absorbs the fee, client pays the listed `maxDeliveryRate`).
 
 **Off-chain marketplace migration (planned)** — rollout plan for moving mech requests off the public chain rails while keeping them billable and auditable. Two phases plus an optional third. Spec: `docs/marketplace_api_spec.md` (marketplace-side API, structured 402, commit-reveal privacy, mech-side write path into the data lake). Companion sub-phase 2 covers analytics: pipeline spec `docs/mech_analytics_etl_spec.md` and table-schema reference `docs/mech_analytics_etl_schema.md` (six metrics tables, three Wildcard API endpoints under `/v1/metrics/...`).
 

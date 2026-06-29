@@ -131,11 +131,11 @@ mech_received ≈ value * (10000 - fee_bps) / 10000   (ceil-rounded on the fee)
 Two valid quote policies follow:
 
 - **Policy A, client pays the listed rate (mech absorbs fee).** `quote = maxDeliveryRate`. Client pays exactly the mech's advertised rate, the mech keeps `maxDeliveryRate * (1 - fee_bps/10000)` after the marketplace cut. Mirrors the existing pre-deposit flow where the mech absorbs the fee.
-- **Policy B, client pays grossed-up (mech receives listed rate net).** `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`. Client pays slightly more than the listed rate, the mech receives `maxDeliveryRate` after fee. Predictable revenue for mech operators, slightly more complex for client SDKs to compute.
+- **Policy B, client pays grossed-up (mech receives listed rate net).** `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`. Client pays more than the listed rate; the mech receives exactly `maxDeliveryRate` after the marketplace fee. Predictable revenue for mech operators, slightly more complex for client SDKs to compute. At 15% fee on a 10000 listed rate, Policy B quote = `ceil(10000 * 10000 / 8500) = 11765`.
 
-Both work. The marketplace contract does not enforce either. **This needs an explicit policy decision before implementation**, and the same decision must be applied consistently to MPP session quotes (see `docs/mpp_session_spec.md`). v1 recommendation: Policy A. It matches the existing flow and avoids the gross-up math in client SDKs.
+Both work. The marketplace contract does not enforce either. **v1 ships Policy A across this spec and `docs/mpp_session_spec.md`**: every worked example, the §4 routing table, and the §5 numbers all use Policy A. Switching to Policy B is a swap of the quote-derivation function and re-running each example. The two policies are not mixable inside a single spec — Policy A and Policy B produce different `maxAmountRequired` values for the same listed rate, and only one can be advertised at a time per mech.
 
-The mech queries `MechMarketplace.fee()` for fee bps and returns the resulting quote in the HTTP 402 response body. The worked example in Section 5 below uses Policy B for illustration (the 10200 figure is the grossed-up quote at 2% fee); rewrite to Policy A by setting `quote = maxDeliveryRate = 10000` if that policy is chosen.
+The mech queries `MechMarketplace.fee()` for fee bps and returns the resulting quote in the HTTP 402 response body.
 
 **NVM/dynamic-price mechs (future scope):** on requests without payment headers, run tool with `delivery_rate=0` to get cost estimate, then apply the same chosen policy.
 
@@ -143,7 +143,9 @@ The mech queries `MechMarketplace.fee()` for fee bps and returns the resulting q
 
 In `adjustMechRequesterBalances` (BalanceTrackerBase.sol), the batch loop sums `mechDeliveryRates[]` into `totalMechDeliveryRate`, then `_adjustInitialBalance` is called **once** with that total — not once per request.
 
-**Batching IS achievable.** Because `paymentData` is an opaque `bytes` blob interpreted only by the specific BalanceTracker, `BalanceTrackerX402USDC._adjustInitialBalance` can decode it as an **array** of EIP-3009 authorizations. The override loops through each authorization, calls `transferWithAuthorization` for each, sums the transferred amounts, and checks the total covers `totalMechDeliveryRate`. No changes to `MechMarketplace`, `OlasMech`, or the `paymentData` interface are required.
+**Batching IS achievable, but single-requester only.** Because `paymentData` is an opaque `bytes` blob interpreted only by the specific BalanceTracker, `BalanceTrackerX402USDC._adjustInitialBalance` can decode it as an **array** of EIP-3009 authorizations from the *same* requester. The override loops through each authorization, calls `transferWithAuthorization` for each, sums the transferred amounts, and checks the total covers `totalMechDeliveryRate`. No changes to `MechMarketplace`, `OlasMech`, or the `paymentData` interface are required.
+
+**Constraint: one batch = one requester.** `deliverMarketplaceWithSignatures` (`MechMarketplace.sol:833-834`) takes a single `requester` for the whole call, so even with array-encoded `paymentData` the batch cannot settle requests from distinct clients in one transaction. Cross-client batching would require a marketplace-side change to accept per-request requester addresses, which is explicitly out of scope for v1.
 
 Off-chain, the mech accumulates multiple x402 requests (each with its own EIP-3009 auth from the HTTP `X-Payment` header), encodes all authorizations into a single `paymentData = abi.encode(authArray)`, and calls `deliverMarketplaceWithSignatures` as a normal batch. Each `transferWithAuthorization` is still ~50k gas, but the marketplace overhead (signature verification, karma updates, request bookkeeping) is amortized — one transaction instead of N.
 
@@ -179,7 +181,7 @@ All headers and response schemas follow the [Coinbase x402 standard](https://git
     {
       "scheme": "exact",
       "network": "gnosis",
-      "maxAmountRequired": "10200",
+      "maxAmountRequired": "10000",
       "resource": "/predict",
       "description": "AI tool execution",
       "mimeType": "application/json",
@@ -279,12 +281,12 @@ All four request paths coexist in the mech with no breaking changes to existing 
 
 A single request with the following setup:
 
-> **Tool cost:** 0.01 USDC | **Marketplace fee:** 2% (200 bps) | **Quote:** 0.0102 USDC
+> **Listed rate (maxDeliveryRate):** 0.01 USDC | **Marketplace fee:** 15% (1500 bps, per governance proposal 01) | **Quote (Policy A):** 0.01 USDC
 > **Client:** `0xClient` | **Mech:** `0xMech` (paymentType = X402_USDC) | **BalanceTrackerX402USDC:** `0xBalX402`
 
 ### HTTP Phase
 
-Client sends `POST /predict` with no `X-Payment` header. Mech calculates `0.01 + (0.01 * 200 / 10000) = 0.0102 USDC` and returns HTTP 402 with body:
+Client sends `POST /predict` with no `X-Payment` header. Mech queries `MechMarketplace.fee() = 1500`, applies Policy A (`quote = maxDeliveryRate = 10000`), and returns HTTP 402 with body:
 
 ```json
 {
@@ -292,7 +294,7 @@ Client sends `POST /predict` with no `X-Payment` header. Mech calculates `0.01 +
   "accepts": [{
     "scheme": "exact",
     "network": "gnosis",
-    "maxAmountRequired": "10200",
+    "maxAmountRequired": "10000",
     "payTo": "0xBalX402",
     "asset": "0x2a22f9c3b484c3629090FeED35F17Ff8F88f76F0",
     "maxTimeoutSeconds": 900,
@@ -313,24 +315,24 @@ Mech Safe submits:
 
 ```
 requester     = 0xClient
-deliveryRates = [10200]
-paymentData   = abi.encode(from=0xClient, to=0xBalX402, value=10200,
+deliveryRates = [10000]
+paymentData   = abi.encode(from=0xClient, to=0xBalX402, value=10000,
                            validAfter, validBefore, nonce, v, r, s)
 ```
 
 BalanceTrackerX402USDC settlement:
 
 ```
-USDC.transferWithAuthorization: 10200 units moves 0xClient -> 0xBalX402
-mapRequesterBalances[0xClient] += 10200, then -= 10200
-mapMechBalances[0xMech] += 10200
+USDC.transferWithAuthorization: 10000 units moves 0xClient -> 0xBalX402
+mapRequesterBalances[0xClient] += 10000, then -= 10000
+mapMechBalances[0xMech] += 10000
 ```
 
-`processPaymentByMultisig` (after 10 accumulated requests @ 10200 = 102000 total):
+`processPaymentByMultisig` (after 10 accumulated requests @ 10000 = 100000 total):
 
 ```
-Fee: (102000 * 200 + 9999) / 10000 = 2040 -> marketplace treasury
-Mech payment: 102000 - 2040 = 99960 -> Mech Safe
+Fee: (100000 * 1500 + 9999) / 10000 = 15000 -> marketplace treasury
+Mech payment: 100000 - 15000 = 85000 -> Mech Safe
 mapMechBalances[0xMech] reset to 0
 ```
 

@@ -163,6 +163,8 @@ function _adjustInitialBalance(
 - `received >= deliveryRate` is the safety net: if the escrow somehow transferred less than expected, we abort. Belt-and-braces against future escrow upgrades.
 - Existing payment families are unaffected because the override only runs when registered against `keccak256("MPP_SESSION_USDC")`.
 
+**Surplus-settlement branch.** If the cumulative delta the escrow transfers is *greater* than the summed batch's `deliveryRate` (e.g. the mech under-batches by settling 8 voucher-accepted requests in a batch sized for 6), the override returns `balance + received - deliveryRate`, leaving the positive remainder in `mapRequesterBalances[requester]`. The escrow's `settled` cursor advances by the full delta, so the surplus is genuinely paid-for — it just lands as requester credit instead of being immediately debited. The next batch from the same requester nets it out (the override starts with `balance > 0` and the loop in `adjustMechRequesterBalances` debits from that balance first before pulling new funds). v1 has no requester withdrawal on `BalanceTrackerMppSession`, so a session that closes with surplus credit forfeits it; the `MppEscrow.close` refund path described in §5 is what protects the client end-to-end, and the credit-on-tracker case only matters when settlement runs ahead of batch settlement, which the mech operator controls. §10 test list adds a case for "settlement delta > summed batch rates" to lock the surplus behavior in.
+
 **`closeChannel` entry point**:
 
 The escrow's `close()` is callable only by the channel's `payee` (= this BalanceTracker). So the BalanceTracker must expose its own entry to forward the call. Suggested shape:
@@ -233,7 +235,7 @@ Two valid quote policies follow:
 - **Policy A, client pays the listed rate**. `quote = maxDeliveryRate`. Mech absorbs fee, keeps `maxDeliveryRate * (1 - fee_bps/10000)`.
 - **Policy B, client pays grossed-up**. `quote = ceil(maxDeliveryRate * 10000 / (10000 - fee_bps))`. Mech receives `maxDeliveryRate` net of fee.
 
-Pick one consistently with the x402 spec (`docs/x402_spec.md` Section 3.3). v1 recommendation is Policy A. The worked example in Section 5 of this document uses Policy B (quote 10200 at 2% fee) for illustration; substitute `quote = maxDeliveryRate = 10000` if Policy A is chosen.
+**v1 ships Policy A** consistently with `docs/x402_spec.md` §3.3. Every worked example, schema sample, and batch math in this document uses Policy A at the live 15% marketplace fee (1500 bps, per governance proposal 01). Switching to Policy B would require re-running every example here and in the x402 spec — the two policies cannot be mixed inside a single spec because they produce different `pricing.perRequest` values for the same listed rate.
 
 The mech queries `MechMarketplace.fee()` for fee bps and returns the quote in the HTTP 402 response body.
 
@@ -352,9 +354,9 @@ All payment paths coexist in the mech with no breaking changes to existing flows
 
 A run of 10 requests from the same client with the following setup:
 
-> **Tool cost**: 0.01 USDC per request
-> **Marketplace fee**: 2% (200 bps)
-> **Quote per request**: 0.0102 USDC = 10200 atomic units
+> **Listed rate (maxDeliveryRate)**: 0.01 USDC per request
+> **Marketplace fee**: 15% (1500 bps, per governance proposal 01)
+> **Quote per request (Policy A)**: 0.01 USDC = 10000 atomic units
 > **Client**: `0xClient`
 > **Mech**: `0xMech` (paymentType = MPP_SESSION_USDC)
 > **BalanceTrackerMppSession**: `0xBalMpp`
@@ -377,7 +379,7 @@ Client sends `POST /predict`. Mech returns HTTP 402 with body:
       "payee": "0xBalMpp",
       "token": "0x...usdc",
       "maxDeposit": "500000",
-      "pricing": { "perRequest": "10200" }
+      "pricing": { "perRequest": "10000" }
     }
   ],
   "error": "Payment required"
@@ -403,10 +405,10 @@ Escrow stores channel, pulls 500_000 USDC from client. **One on-chain tx.**
 
 ### HTTP Phase (requests 1 through 10)
 
-For each request `i = 1..10`, client signs voucher `{channelId, cumulative = i * 10200}` and `hash(requestData_i)`. Posts both. Mech verifies voucher off-chain, checks `cumulative > prev`, accepts, runs tool, returns HTTP 200.
+For each request `i = 1..10`, client signs voucher `{channelId, cumulative = i * 10000}` and `hash(requestData_i)`. Posts both. Mech verifies voucher off-chain, checks `cumulative > prev`, accepts, runs tool, returns HTTP 200.
 
 After 10 requests:
-- `highestAcceptedCumulative = 102000`
+- `highestAcceptedCumulative = 100000`
 - Off-chain on-chain settled count: 0
 - Tool executions: 10
 - On-chain transactions during this phase: 0
@@ -419,33 +421,33 @@ Mech Safe submits:
 deliverMarketplaceWithSignatures(
   requester = 0xClient,
   deliverWithSignatures = [10 entries, each with requestData_i + sig_i + deliveryData_i],
-  deliveryRates = [10200, 10200, ..., 10200],
-  paymentData = abi.encode(channelId, 102000, voucherSig_10)
+  deliveryRates = [10000, 10000, ..., 10000],
+  paymentData = abi.encode(channelId, 100000, voucherSig_10)
 )
 ```
 
 Inside the call:
 - MechMarketplace verifies 10 request signatures, records 10 deliveries, increments karma by 10, updates counters.
 - BalanceTrackerMppSession.adjustMechRequesterBalances:
-  - sum of rates = 102000
+  - sum of rates = 100000
   - balanceBefore = X
   - calls MppEscrow.settleFrom(0xClient, paymentData)
   - escrow verifies voucherSig_10 against channel's authorizedSigner
-  - escrow requires 102000 > 0 (prev settled)
-  - escrow transfers 102000 USDC from itself to 0xBalMpp
-  - balanceAfter - balanceBefore = 102000
-  - received >= 102000 check passes
+  - escrow requires 100000 > 0 (prev settled)
+  - escrow transfers 100000 USDC from itself to 0xBalMpp
+  - balanceAfter - balanceBefore = 100000
+  - received >= 100000 check passes
 - requesterBalance and mechBalance updated as usual.
 
 **One on-chain tx for 10 deliveries.**
 
 ### Fee Carve-Out
 
-After 10 accumulated requests at `mapMechBalances[0xMech] = 102000`:
+After 10 accumulated requests at `mapMechBalances[0xMech] = 100000`:
 
 ```
-fee = ceil(102000 * 200 / 10000) = 2040 -> marketplace treasury
-mech payment = 102000 - 2040 = 99960  -> Mech Safe
+fee = ceil(100000 * 1500 / 10000) = 15000 -> marketplace treasury
+mech payment = 100000 - 15000 = 85000   -> Mech Safe
 ```
 
 **Unchanged from existing flow.**
@@ -455,10 +457,10 @@ mech payment = 102000 - 2040 = 99960  -> Mech Safe
 When the client is done, or when the remaining deposit is below the next request cost:
 
 ```
-MppEscrow.close(channelId, 102000, voucherSig_10)
+MppEscrow.close(channelId, 100000, voucherSig_10)
 ```
 
-Escrow refunds `500000 - 102000 = 398000` to the client. Marks channel finalized. **One on-chain tx.**
+Escrow refunds `500000 - 100000 = 400000` to the client. Marks channel finalized. **One on-chain tx.**
 
 ### Total Cost Summary
 
