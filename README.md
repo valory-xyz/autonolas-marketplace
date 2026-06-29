@@ -84,6 +84,15 @@ several steps in order to be verified. Those include:
 - running tests
 
 
+## Governance proposals
+On-chain governance proposals targeting the MechMarketplace stack live under
+[`scripts/proposals/`](https://github.com/valory-xyz/autonolas-marketplace/blob/main/scripts/proposals).
+Each proposal has its own folder with a Forge calldata builder, `description.txt`, and `README.md`;
+L1 effects are verified by fork tests under
+[`test/proposals/`](https://github.com/valory-xyz/autonolas-marketplace/blob/main/test/proposals).
+See [`scripts/proposals/README.md`](https://github.com/valory-xyz/autonolas-marketplace/blob/main/scripts/proposals/README.md)
+for the proposal index.
+
 ## Deployment and redeployment
 The deployment of contracts to the test- and main-net is split into step-by-step series of scripts for more control and checkpoint convenience.
 The description of deployment procedure can be found here: [deployment](https://github.com/valory-xyz/autonolas-marketplace/blob/main/scripts/deployment).

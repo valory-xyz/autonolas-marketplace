@@ -51,5 +51,11 @@
     "canonical-weth": "^1.4.0",
     "solhint": "^5.0.4",
     "ethereum-sources-downloader": "^0.2.1"
+  },
+  "resolutions": {
+    "axios": ">=1.16.0",
+    "follow-redirects": ">=1.16.0",
+    "lodash": ">=4.18.0",
+    "ws": ">=8.20.1"
   }
 }
