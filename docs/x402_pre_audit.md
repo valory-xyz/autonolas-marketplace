@@ -25,9 +25,9 @@ However, there are **several security-critical areas** that require careful atte
 - `OlasMech.sol` — Base mech (unchanged)
 
 ### Proposed Contracts (not yet written)
-1. `BalanceTrackerX402.sol` — EIP-3009 settlement handler
-2. `MechFixedPriceTokenX402.sol` — Mech with `paymentType = keccak256("X402USDC")`
-3. `MechFactoryFixedPriceTokenX402.sol` — CREATE2 factory
+1. `BalanceTrackerX402USDC.sol` — EIP-3009 settlement handler
+2. `MechFixedPriceTokenX402USDC.sol` — Mech with `paymentType = keccak256("X402USDC")`
+3. `MechFactoryFixedPriceTokenX402USDC.sol` — CREATE2 factory
 
 ---
 
@@ -53,7 +53,7 @@ However, there are **several security-critical areas** that require careful atte
 
 **Risk**: The spec describes an 11-step flow where:
 - Step 7: Mech executes tool (off-chain, immediate)
-- Step 10: `BalanceTrackerX402._adjustInitialBalance()` calls `USDC.transferWithAuthorization()` (on-chain, delayed batch)
+- Step 10: `BalanceTrackerX402USDC._adjustInitialBalance()` calls `USDC.transferWithAuthorization()` (on-chain, delayed batch)
 
 Between steps 7 and 10, the client's EIP-3009 authorization is outstanding. The client could:
 - Transfer their USDC balance elsewhere before settlement
@@ -71,17 +71,17 @@ Between steps 7 and 10, the client's EIP-3009 authorization is outstanding. The 
 ### HIGH — H-2: EIP-3009 Signature Replay Across Chains
 
 **Risk**: EIP-3009 `transferWithAuthorization` uses EIP-712 domain separator which includes `chainId`. However:
-- The spec deploys `BalanceTrackerX402` on multiple chains (Base, Optimism, Polygon, Gnosis)
+- The spec deploys `BalanceTrackerX402USDC` on multiple chains (Base, Optimism, Polygon, Gnosis)
 - Each has different USDC contract addresses, so cross-chain replay is prevented at the USDC contract level
 - BUT: if the same USDC address exists on two chains (e.g., via CREATE2 deployment), replay is possible
 
 **Assessment**: Low practical risk because Circle deploys USDC at different addresses per chain. But worth a defensive check.
 
-**Recommendation**: `BalanceTrackerX402` constructor should validate `block.chainid` matches expected chain and store it as immutable. Verify EIP-712 domain separator includes the correct chain ID.
+**Recommendation**: `BalanceTrackerX402USDC` constructor should validate `block.chainid` matches expected chain and store it as immutable. Verify EIP-712 domain separator includes the correct chain ID.
 
 ### MEDIUM — M-1: `paymentData` ABI Decode Safety
 
-**Risk**: `BalanceTrackerX402._adjustInitialBalance()` will `abi.decode(paymentData, ...)` to extract EIP-3009 parameters. Malformed `paymentData` could:
+**Risk**: `BalanceTrackerX402USDC._adjustInitialBalance()` will `abi.decode(paymentData, ...)` to extract EIP-3009 parameters. Malformed `paymentData` could:
 - Cause revert (losing the entire batch if not isolated)
 - Pass unexpected values through to `transferWithAuthorization`
 
@@ -164,7 +164,7 @@ The spec proposes a `MockUSDCEIP3009.sol` for testing. This is fine for unit tes
 
 ## Contract Implementation Checklist
 
-When `BalanceTrackerX402.sol` is implemented, verify:
+When `BalanceTrackerX402USDC.sol` is implemented, verify:
 
 | # | Check | Status |
 |---|-------|--------|
@@ -229,4 +229,4 @@ When `BalanceTrackerX402.sol` is implemented, verify:
 
 The x402 integration design is **well-thought-out and security-conscious**. The key risk is the settlement window between tool execution and on-chain payment (H-1), which the spec explicitly accepts for small amounts. The biggest blocker is Gnosis USDC EIP-3009 verification (M-3).
 
-**Overall assessment**: Ready for implementation with the above recommendations. The audit of the actual contracts should focus on `BalanceTrackerX402._adjustInitialBalance()` as the critical function — it's the only new on-chain logic touching user funds.
+**Overall assessment**: Ready for implementation with the above recommendations. The audit of the actual contracts should focus on `BalanceTrackerX402USDC._adjustInitialBalance()` as the critical function — it's the only new on-chain logic touching user funds.

@@ -8,7 +8,7 @@
 
 ### What's Correct
 
-1. **Core approach is sound.** Using a new `BalanceTrackerX402` contract that extends `BalanceTrackerFixedPriceToken` is the right call. The `paymentData` field already flows through the entire chain (`OlasMech` -> `MechMarketplace` -> `BalanceTracker`) and is currently unused — this is clearly designed as an extension point.
+1. **Core approach is sound.** Using a new `BalanceTrackerX402USDC` contract that extends `BalanceTrackerFixedPriceToken` is the right call. The `paymentData` field already flows through the entire chain (`OlasMech` -> `MechMarketplace` -> `BalanceTracker`) and is currently unused — this is clearly designed as an extension point.
 
 2. **Zero changes to MechMarketplace and OlasMech** — confirmed. `paymentData` is passed through untouched in both contracts.
 
@@ -16,13 +16,13 @@
 
 4. **Native token limitation** — correctly identified. WETH9/wxDAI does not support EIP-3009.
 
-5. **Registration via `mapPaymentTypeBalanceTrackers`** — correct. A new payment type `keccak256("X402USDC")` maps to the new `BalanceTrackerX402` address, with matching `MechFixedPriceTokenX402` and `MechFactoryFixedPriceTokenX402`.
+5. **Registration via `mapPaymentTypeBalanceTrackers`** — correct. A new payment type `keccak256("X402USDC")` maps to the new `BalanceTrackerX402USDC` address, with matching `MechFixedPriceTokenX402USDC` and `MechFactoryFixedPriceTokenX402USDC`.
 
 6. **Mech as Facilitator** — reasonable. Eliminates an external dependency.
 
 7. **Override target `_adjustInitialBalance`** — correctly identified (Section 3.1). The call chain, the need to bypass `_getRequiredFunds`/`transferFrom`, and the `super` fallback for empty `paymentData` are all accurately described.
 
-8. **Three-contract set** — the spec now correctly requires `BalanceTrackerX402`, `MechFixedPriceTokenX402`, and `MechFactoryFixedPriceTokenX402` (Section 3.1 "Required contract set").
+8. **Three-contract set** — the spec now correctly requires `BalanceTrackerX402USDC`, `MechFixedPriceTokenX402USDC`, and `MechFactoryFixedPriceTokenX402USDC` (Section 3.1 "Required contract set").
 
 9. **Quote generation** — Section 3.3 correctly distinguishes fixed-price (deterministic `maxDeliveryRate + fee`, no tool execution) from NVM/dynamic (future scope).
 
@@ -56,9 +56,9 @@ Section 6.3 states the mech request signature (Signature 2) "must be added as an
 
 ### Phase 1 — Smart Contracts
 
-#### 1.1 Create `BalanceTrackerX402` contract
+#### 1.1 Create `BalanceTrackerX402USDC` contract
 
-**Location:** `contracts/mechs/token/x402/BalanceTrackerX402.sol`
+**Location:** `contracts/mechs/token/x402/BalanceTrackerX402USDC.sol`
 
 **Extends:** `BalanceTrackerFixedPriceToken`
 
@@ -101,9 +101,9 @@ This design supports both per-request settlement (single-element array) and batc
 
 **Interface needed:** Add `IEIP3009` interface with `transferWithAuthorization` signature.
 
-#### 1.2 Create `MechFixedPriceTokenX402` contract
+#### 1.2 Create `MechFixedPriceTokenX402USDC` contract
 
-**Location:** `contracts/mechs/token/x402/MechFixedPriceTokenX402.sol`
+**Location:** `contracts/mechs/token/x402/MechFixedPriceTokenX402USDC.sol`
 
 **Extends:** `MechFixedPriceBase`
 
@@ -113,17 +113,17 @@ This design supports both per-request settlement (single-element array) and batc
 bytes32 public constant PAYMENT_TYPE = 0x...;
 ```
 
-#### 1.3 Create `MechFactoryFixedPriceTokenX402` contract
+#### 1.3 Create `MechFactoryFixedPriceTokenX402USDC` contract
 
-**Location:** `contracts/mechs/token/x402/MechFactoryFixedPriceTokenX402.sol`
+**Location:** `contracts/mechs/token/x402/MechFactoryFixedPriceTokenX402USDC.sol`
 
 **Extends:** `MechFactoryBase`
 
-**Pattern:** Identical to `MechFactoryFixedPriceTokenUSDC` but creates `MechFixedPriceTokenX402` instances.
+**Pattern:** Identical to `MechFactoryFixedPriceTokenUSDC` but creates `MechFixedPriceTokenX402USDC` instances.
 
 #### 1.4 Add struct and error definitions
 
-In `contracts/mechs/token/x402/BalanceTrackerX402.sol` (or a shared interface):
+In `contracts/mechs/token/x402/BalanceTrackerX402USDC.sol` (or a shared interface):
 
 **Struct:**
 ```solidity
@@ -149,7 +149,7 @@ struct Authorization {
 
 #### 2.1 Create contract test file
 
-**Location:** `test/MechFixedPriceTokenX402.js`
+**Location:** `test/MechFixedPriceTokenX402USDC.js`
 
 **Test cases:**
 1. **Happy path:** Client signs EIP-3009, mech delivers via `deliverMarketplaceWithSignatures` with `paymentData`, `_adjustInitialBalance` override executes `transferWithAuthorization`, funds move atomically, balances update correctly
@@ -196,7 +196,7 @@ mechMarketplace.setMechFactoryStatuses(
 
 Start with one chain where USDC has verified EIP-3009 support. Base and Optimism have native Circle USDC and are safer initial targets. Gnosis USDC (`0x2a22...`) is bridged — verify `transferWithAuthorization` support before targeting.
 
-Per-chain deployment: each chain requires its own `BalanceTrackerX402` instance with that chain's USDC address.
+Per-chain deployment: each chain requires its own `BalanceTrackerX402USDC` instance with that chain's USDC address.
 
 ### Phase 4 — Mech-Side (Off-Chain, Out of This Repo)
 
@@ -222,8 +222,8 @@ This is mech application code (not in this repo). Key deliverables per spec Sect
 
 ```
 Phase 1.4 (errors)
-  -> Phase 1.1 (BalanceTrackerX402)
-  -> Phase 1.2 (MechFixedPriceTokenX402)  [independent of 1.1]
+  -> Phase 1.1 (BalanceTrackerX402USDC)
+  -> Phase 1.2 (MechFixedPriceTokenX402USDC)  [independent of 1.1]
   -> Phase 1.3 (MechFactoryX402)           [depends on 1.2]
   -> Phase 2.1 (contract tests)            [depends on all of Phase 1]
   -> Phase 3   (deployment)                [depends on Phase 2.1 passing]
@@ -235,11 +235,11 @@ Phase 4 (mech + client off-chain)          [independent, can parallel]
 
 | File | Purpose |
 |------|---------|
-| `contracts/mechs/token/x402/BalanceTrackerX402.sol` | EIP-3009 payment settlement |
-| `contracts/mechs/token/x402/MechFixedPriceTokenX402.sol` | Mech with X402USDC payment type |
-| `contracts/mechs/token/x402/MechFactoryFixedPriceTokenX402.sol` | Factory for x402 mechs |
+| `contracts/mechs/token/x402/BalanceTrackerX402USDC.sol` | EIP-3009 payment settlement |
+| `contracts/mechs/token/x402/MechFixedPriceTokenX402USDC.sol` | Mech with X402USDC payment type |
+| `contracts/mechs/token/x402/MechFactoryFixedPriceTokenX402USDC.sol` | Factory for x402 mechs |
 | `contracts/test/MockUSDCEIP3009.sol` | Mock USDC with `transferWithAuthorization` |
-| `test/MechFixedPriceTokenX402.js` | Contract test suite |
+| `test/MechFixedPriceTokenX402USDC.js` | Contract test suite |
 | `scripts/deployment/deploy_08_balance_tracker_x402.js` | Deployment script |
 | `scripts/deployment/deploy_08_balance_tracker_x402.sh` | Deployment wrapper |
 | `scripts/deployment/deploy_09_mech_factory_x402.js` | Factory deployment |
@@ -257,7 +257,7 @@ Most gaps identified in the earlier review have been addressed by the updated sp
 
 ### ~~Open Item 1 — Batch Loop Claim~~ (Resolved)
 
-Spec Section 3.3 has been corrected. It now accurately describes that `_adjustInitialBalance` is called once with the summed total. Batching IS supported by encoding multiple EIP-3009 authorizations as an array in `paymentData` — the `BalanceTrackerX402` override loops through each auth and calls `transferWithAuthorization` per auth. Per-request settlement is recommended for v1 simplicity, with batching as a later optimization.
+Spec Section 3.3 has been corrected. It now accurately describes that `_adjustInitialBalance` is called once with the summed total. Batching IS supported by encoding multiple EIP-3009 authorizations as an array in `paymentData` — the `BalanceTrackerX402USDC` override loops through each auth and calls `transferWithAuthorization` per auth. Per-request settlement is recommended for v1 simplicity, with batching as a later optimization.
 
 ### Open Item 2 — Gnosis USDC EIP-3009 Verification
 

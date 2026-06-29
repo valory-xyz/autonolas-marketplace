@@ -210,7 +210,7 @@ DO NOT call facilitator /settle — we settle ourselves
     via deliverMarketplaceWithSignatures
 ```
 
-The key insight: we call `/verify` but **never** call `/settle`. The facilitator's `/settle` would call `USDC.transferWithAuthorization` directly on-chain. USDC would arrive at our `BalanceTrackerX402`, but `mapRequesterBalances` would NOT be updated — tokens arrived but no accounting record of who sent them or for which request. Settlement must go through `deliverMarketplaceWithSignatures` → `_adjustInitialBalance`, which updates all accounting atomically.
+The key insight: we call `/verify` but **never** call `/settle`. The facilitator's `/settle` would call `USDC.transferWithAuthorization` directly on-chain. USDC would arrive at our `BalanceTrackerX402USDC`, but `mapRequesterBalances` would NOT be updated — tokens arrived but no accounting record of who sent them or for which request. Settlement must go through `deliverMarketplaceWithSignatures` → `_adjustInitialBalance`, which updates all accounting atomically.
 
 Since we only call `/verify` (not `/settle`), there's no settlement conflict. The facilitator still indexes the mech based on verification traffic, so Bazaar visibility is unaffected.
 
@@ -307,7 +307,7 @@ When `facilitator_url` is `None`, the behaviour falls back to local signature ve
     "scheme": "exact",
     "network": "eip155:8453",
     "maxAmountRequired": "10200",
-    "payTo": "0xBalanceTrackerX402",
+    "payTo": "0xBalanceTrackerX402USDC",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "maxTimeoutSeconds": 900,
     "description": "AI tool execution via Olas mech",
@@ -318,7 +318,7 @@ When `facilitator_url` is `None`, the behaviour falls back to local signature ve
 }
 ```
 
-The `network`, `asset` (USDC address), and `payTo` (BalanceTrackerX402 address) change per chain. Everything else is the same.
+The `network`, `asset` (USDC address), and `payTo` (BalanceTrackerX402USDC address) change per chain. Everything else is the same.
 
 ### Bazaar metadata (Option B only — for Base and Polygon)
 
@@ -331,7 +331,7 @@ When using an external facilitator, add Bazaar metadata to the 402 response for 
     "scheme": "exact",
     "network": "eip155:8453",
     "maxAmountRequired": "10200",
-    "payTo": "0xBalanceTrackerX402",
+    "payTo": "0xBalanceTrackerX402USDC",
     "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "maxTimeoutSeconds": 900,
     "description": "AI tool execution via Olas mech",

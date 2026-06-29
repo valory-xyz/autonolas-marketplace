@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-This document specifies how to make the Mech Marketplace x402-compatible. The approach extends the existing `deliverMarketplaceWithSignatures` function with a new `BalanceTrackerX402` contract, and designates the Mech itself as the x402 Facilitator. No changes are required to `MechMarketplace` or `OlasMech`, and all existing payment flows remain completely untouched.
+This document specifies how to make the Mech Marketplace x402-compatible. The approach extends the existing `deliverMarketplaceWithSignatures` function with a new `BalanceTrackerX402USDC` contract, and designates the Mech itself as the x402 Facilitator. No changes are required to `MechMarketplace` or `OlasMech`, and all existing payment flows remain completely untouched.
 
 ### Roles in x402
 
@@ -10,7 +10,7 @@ This document specifies how to make the Mech Marketplace x402-compatible. The ap
 |-----------|---------|
 | **Client** | The agent or application calling the mech HTTP endpoint. Signs EIP-3009 and request authorizations off-chain. |
 | **Resource Server** | The Mech — provides the AI tool service and handles the full 402 handshake. |
-| **Facilitator** | Also the Mech. The mech runs its own `/verify` and `/health` endpoints internally, eliminating the need for a separate facilitator service. Signature verification and pre-checks happen in-process before tool execution. |
+| **Facilitator** | Also the Mech. The mech runs `/verify` in-process (signature verification and pre-checks), eliminating the need for a separate facilitator service. `/supported` and `/health` are not exposed in this collapsed architecture — see §3.4. |
 
 > **Key design principle**
 > The x402 protocol is not modified — we plug into it using its built-in extension points.
@@ -64,11 +64,11 @@ The majority of deployed mechs accept payment in native tokens (xDAI on Gnosis).
 
 The solution builds on `deliverMarketplaceWithSignatures` — a function that already provides two properties critical for x402 compatibility: it takes `requester` as an explicit parameter (preserving correct subgraph attribution), and it registers and delivers a request atomically in a single on-chain call (eliminating the need for a separate `request()` step).
 
-Two targeted changes address the remaining issues: a new `BalanceTrackerX402` contract handles EIP-3009 payment settlement, and the client signs both a payment authorization and a request signature in a single off-chain step.
+Two targeted changes address the remaining issues: a new `BalanceTrackerX402USDC` contract handles EIP-3009 payment settlement, and the client signs both a payment authorization and a request signature in a single off-chain step.
 
-### 3.1 BalanceTrackerX402 — Addressing Issue 1
+### 3.1 BalanceTrackerX402USDC — Addressing Issue 1
 
-The `paymentData` field already flows through the entire call chain (`MechMarketplace` → `OlasMech` → `BalanceTracker`) and is currently empty for all existing flows. The solution is to deploy a new `BalanceTrackerX402` contract that interprets non-empty `paymentData` as an EIP-3009 `transferWithAuthorization`.
+The `paymentData` field already flows through the entire call chain (`MechMarketplace` → `OlasMech` → `BalanceTracker`) and is currently empty for all existing flows. The solution is to deploy a new `BalanceTrackerX402USDC` contract that interprets non-empty `paymentData` as an EIP-3009 `transferWithAuthorization`.
 
 **Delivery call chain:**
 
@@ -81,22 +81,22 @@ OlasMech.deliverMarketplaceWithSignatures()
 
 > **Note:** `checkAndRecordDeliveryRates` is only called during the **request phase** (`MechMarketplace.request`/`requestBatch`), which does NOT exist in the x402 flow — the whole point is atomic request+delivery. The override target is `_adjustInitialBalance` because it: is called by both `checkAndRecordDeliveryRates` and `adjustMechRequesterBalances`; already accepts `paymentData` as `bytes memory` (unnamed/ignored in the base); and controls the fund acquisition path (calling `_getRequiredFunds` → `transferFrom` when balance is insufficient).
 
-**When `_adjustInitialBalance` receives non-empty `paymentData`**, the `BalanceTrackerX402` override fully reimplements the balance logic (does NOT call `super`, bypassing `_getRequiredFunds` / `transferFrom` entirely):
+**When `_adjustInitialBalance` receives non-empty `paymentData`**, the `BalanceTrackerX402USDC` override fully reimplements the balance logic (does NOT call `super`, bypassing `_getRequiredFunds` / `transferFrom` entirely):
 
 1. Decode `paymentData` to extract: `from`, `to`, `value`, `validAfter`, `validBefore`, `nonce`, `v`, `r`, `s`
 2. Verify `from == requester` (the client address passed to the function)
-3. Verify `to == address(this)` (the BalanceTrackerX402 contract itself)
+3. Verify `to == address(this)` (the BalanceTrackerX402USDC contract itself)
 4. Verify `value + existing balance >= deliveryRate`
-5. Call `USDC.transferWithAuthorization(from, to, value, validAfter, validBefore, nonce, v, r, s)` — tokens move atomically from client wallet to BalanceTrackerX402
+5. Call `USDC.transferWithAuthorization(from, to, value, validAfter, validBefore, nonce, v, r, s)` — tokens move atomically from client wallet to BalanceTrackerX402USDC
 6. Return updated balance: `(existing balance + value - deliveryRate)`
 
 **When `paymentData` is empty**, the override delegates to `super._adjustInitialBalance(requester, balance, deliveryRate, "")`, preserving standard `transferFrom` behavior for pre-deposited funds. All existing payment flows are completely unchanged.
 
 #### Contract scope
 
-- `BalanceTrackerX402` extends `BalanceTrackerFixedPriceToken`, overriding only `_adjustInitialBalance`.
+- `BalanceTrackerX402USDC` extends `BalanceTrackerFixedPriceToken`, overriding only `_adjustInitialBalance`.
 - Everything else (`adjustMechRequesterBalances`, `processPaymentByMultisig`, `mapMechBalances`, fee logic) is fully inherited.
-- Registered via: MechMarketplace owner sets `mapPaymentTypeBalanceTrackers[keccak256("X402USDC")] = BalanceTrackerX402 address`.
+- Registered via: MechMarketplace owner sets `mapPaymentTypeBalanceTrackers[keccak256("X402USDC")] = BalanceTrackerX402USDC address`.
 - **MechMarketplace: ZERO changes. OlasMech: ZERO changes. Existing BalanceTrackers: ZERO changes.**
 
 #### Required contract set
@@ -105,15 +105,15 @@ The marketplace resolves the balance tracker via `mapPaymentTypeBalanceTrackers[
 
 | Contract | Purpose |
 |----------|---------|
-| `BalanceTrackerX402` | EIP-3009 payment settlement (overrides `_adjustInitialBalance`) |
-| `MechFixedPriceTokenX402` | Mech contract with `PAYMENT_TYPE = keccak256("X402USDC")`, routes to the x402 balance tracker |
-| `MechFactoryFixedPriceTokenX402` | Factory to create `MechFixedPriceTokenX402` instances via CREATE2 |
+| `BalanceTrackerX402USDC` | EIP-3009 payment settlement (overrides `_adjustInitialBalance`) |
+| `MechFixedPriceTokenX402USDC` | Mech contract with `PAYMENT_TYPE = keccak256("X402USDC")`, routes to the x402 balance tracker |
+| `MechFactoryFixedPriceTokenX402USDC` | Factory to create `MechFixedPriceTokenX402USDC` instances via CREATE2 |
 
 ### 3.2 Dual Off-Chain Signatures — Addressing Issue 2
 
 The x402 client signs two messages in a single off-chain step. Both are free (no gas).
 
-- **Signature 1 — Payment (EIP-3009):** client signs `TransferWithAuthorization` via EIP-712 typed data (domain: `{name, version, chainId, verifyingContract=USDC}`; message: `{from=client, to=BalanceTrackerX402, value, validAfter, validBefore, nonce}`). This is base64-encoded into a `PaymentPayload` and sent as the `X-Payment` header. The mech extracts the EIP-3009 parameters from the payload and encodes them into `paymentData` for on-chain settlement.
+- **Signature 1 — Payment (EIP-3009):** client signs `TransferWithAuthorization` via EIP-712 typed data (domain: `{name, version, chainId, verifyingContract=USDC}`; message: `{from=client, to=BalanceTrackerX402USDC, value, validAfter, validBefore, nonce}`). This is base64-encoded into a `PaymentPayload` and sent as the `X-Payment` header. The mech extracts the EIP-3009 parameters from the payload and encodes them into `paymentData` for on-chain settlement.
 - **Signature 2 — Request (standard mech):** client signs `hash(requestData)` using the same private key. This goes into `DeliverWithSignature.signature` for MechMarketplace's on-chain `ecrecover` verification.
 
 Both signatures are sent to the mech: the payment signature in the `X-Payment` header (per x402 standard), the request signature in the request body. The existing `valory-xyz/genai` x402 client library handles the payment signing transparently via `exact.sign_payment_header()`. The mech request signature is added as a second step before dispatch.
@@ -143,7 +143,7 @@ The mech queries `MechMarketplace.fee()` for fee bps and returns the resulting q
 
 In `adjustMechRequesterBalances` (BalanceTrackerBase.sol), the batch loop sums `mechDeliveryRates[]` into `totalMechDeliveryRate`, then `_adjustInitialBalance` is called **once** with that total — not once per request.
 
-**Batching IS achievable.** Because `paymentData` is an opaque `bytes` blob interpreted only by the specific BalanceTracker, `BalanceTrackerX402._adjustInitialBalance` can decode it as an **array** of EIP-3009 authorizations. The override loops through each authorization, calls `transferWithAuthorization` for each, sums the transferred amounts, and checks the total covers `totalMechDeliveryRate`. No changes to `MechMarketplace`, `OlasMech`, or the `paymentData` interface are required.
+**Batching IS achievable.** Because `paymentData` is an opaque `bytes` blob interpreted only by the specific BalanceTracker, `BalanceTrackerX402USDC._adjustInitialBalance` can decode it as an **array** of EIP-3009 authorizations. The override loops through each authorization, calls `transferWithAuthorization` for each, sums the transferred amounts, and checks the total covers `totalMechDeliveryRate`. No changes to `MechMarketplace`, `OlasMech`, or the `paymentData` interface are required.
 
 Off-chain, the mech accumulates multiple x402 requests (each with its own EIP-3009 auth from the HTTP `X-Payment` header), encodes all authorizations into a single `paymentData = abi.encode(authArray)`, and calls `deliverMarketplaceWithSignatures` as a normal batch. Each `transferWithAuthorization` is still ~50k gas, but the marketplace overhead (signature verification, karma updates, request bookkeeping) is amortized — one transaction instead of N.
 
@@ -155,11 +155,14 @@ Off-chain, the mech accumulates multiple x402 requests (each with its own EIP-30
 
 Rather than deploying a separate facilitator service, the mech itself exposes the facilitator endpoints. This keeps the architecture simple: the mech handles EIP-3009 signature verification, nonce checks, and balance checks in-process before executing the tool. There is no external service dependency and no cross-service communication for the verification step.
 
-**Facilitator endpoints exposed by the mech:**
+**Facilitator endpoint exposed by the mech:**
 
 - `POST /verify` — validates the EIP-3009 signature, client balance, nonce, and timestamps. Returns `{ valid: true/false, reason }`.
-- `GET /supported` — returns supported payment configurations (see Section 3.5 for schema).
-- `GET /health` — liveness check. Returns 503 after repeated settlement timeouts (see Section 3.6).
+
+The standard x402 `GET /supported` and `GET /health` endpoints are deliberately not exposed in this collapsed ResourceServer+Facilitator=Mech architecture:
+
+- `/supported` is unnecessary because the mech already advertises its supported payment configuration in the HTTP 402 response body (`accepts[]`, see §3.5). A client that gets a 402 already has everything `/supported` would have returned.
+- `/health` is covered by the mech's existing healthcheck. The settlement-timeout circuit breaker (§3.6 Mitigation 3) hooks into that existing endpoint rather than a new facilitator-specific one.
 
 On-chain settlement is **NOT** handled by the facilitator endpoint. It is handled by the mech's existing batch cycle via `deliverMarketplaceWithSignatures` — the same path used today for off-chain deliveries.
 
@@ -180,7 +183,7 @@ All headers and response schemas follow the [Coinbase x402 standard](https://git
       "resource": "/predict",
       "description": "AI tool execution",
       "mimeType": "application/json",
-      "payTo": "0xBalanceTrackerX402",
+      "payTo": "0xBalanceTrackerX402USDC",
       "maxTimeoutSeconds": 900,
       "asset": "0x2a22f9c3b484c3629090FeED35F17Ff8F88f76F0",
       "extra": {
@@ -197,19 +200,7 @@ All headers and response schemas follow the [Coinbase x402 standard](https://git
 
 **`X-Payment-Response` response header** (mech → client): base64-encoded JSON with settlement status. For the batch-settled mech flow: `{ "success": true, "status": "pending_settlement" }`.
 
-**`GET /supported` response:**
-
-```json
-{
-  "kinds": [
-    {
-      "x402Version": 1,
-      "scheme": "exact",
-      "network": "gnosis"
-    }
-  ]
-}
-```
+(The standard x402 `GET /supported` response shape is unused — the same `{ x402Version, scheme, network }` information is already in the 402 body's `accepts[]` array. See §3.4 for why this endpoint is intentionally omitted.)
 
 ### 3.6 Settlement Failure Handling
 
@@ -221,7 +212,7 @@ The client receives their result at HTTP 200 (step 8), but on-chain settlement h
 
 **Mitigation 2 — Client balance pre-check:** At verification time (step 6), the mech checks the client's on-chain USDC balance >= quote. This reduces (but does not eliminate) the risk of insufficient funds at settlement time.
 
-**Mitigation 3 — Health-based circuit breaker:** Following the `x402-poc` facilitator pattern, the mech tracks `WaitForTransactionReceiptTimeoutError` counts. After 3 consecutive settlement timeouts, the `/health` endpoint returns 503, signaling the orchestrator to restart or pause the x402 flow. This prevents the mech from accumulating unbounded unsettled deliveries.
+**Mitigation 3 — Healthcheck-based circuit breaker:** The mech tracks `WaitForTransactionReceiptTimeoutError` counts. After 3 consecutive settlement timeouts, the mech's **existing healthcheck endpoint** returns 503, signaling the orchestrator to restart or pause the x402 flow. This piggybacks on the same liveness signal used by the rest of the mech (no new `/health` endpoint is introduced — see §3.4). This prevents the mech from accumulating unbounded unsettled deliveries.
 
 **Mitigation 4 — Settlement failure logging:** Failed settlements are logged with `(requestId, requester, nonce, failureReason)` for post-hoc analysis. Clients with repeated settlement failures can be flagged for manual review.
 
@@ -239,7 +230,7 @@ EIP-3009 nonces are random `bytes32` values (not sequential), generated per-requ
 4. If the nonce is fresh, it is added to the set and the request proceeds.
 5. The nonce set is persisted to the mech's shared state (`synchronized_data`) so it survives agent restarts and is consistent across the agent ensemble.
 
-**Multi-mech isolation:** All x402 mechs share a single `BalanceTrackerX402` contract (resolved via `mapPaymentTypeBalanceTrackers[paymentType]`). The `to` field in every EIP-3009 authorization is the same address. Cross-mech replay is prevented by two independent mechanisms:
+**Multi-mech isolation:** All x402 mechs share a single `BalanceTrackerX402USDC` contract (resolved via `mapPaymentTypeBalanceTrackers[paymentType]`). The `to` field in every EIP-3009 authorization is the same address. Cross-mech replay is prevented by two independent mechanisms:
 1. **USDC nonce consumption:** Each `transferWithAuthorization` nonce is one-time use at the USDC contract level. Once consumed, it cannot be replayed by any party.
 2. **Request signature binding:** The `requestId` includes the mech address (via `getRequestId(mech, requester, data, deliveryRate, paymentType, nonce)`), and the requester's signature is verified against this requestId. A different mech cannot produce a valid requestId for the same signed request.
 
@@ -255,15 +246,15 @@ All HTTP steps are new. The on-chain batch cycle (steps 9-11) reuses the existin
 |------|-------|-------------|
 | **1** | HTTP — off-chain | Client sends `POST /predict {tool, prompt}` to Mech. No `X-Payment` header present. |
 | **2** | Mech — off-chain | Mech generates a cost estimate. For fixed-price mechs: `quote = maxDeliveryRate + (maxDeliveryRate * fee_bps / 10000)` — no tool execution needed. For NVM/dynamic mechs (future): run tool with `delivery_rate=0` to get cost estimate, then inflate with fee. Queries `MechMarketplace.fee()` for current fee bps. |
-| **3** | HTTP — off-chain | Mech returns HTTP 402 with JSON body: `{ "x402Version": 1, "accepts": [PaymentRequirements], "error": "Payment required" }`. The `PaymentRequirements` includes `scheme: "exact"`, `network`, `maxAmountRequired: quote`, `payTo: BalanceTrackerX402`, `asset: USDC address`, `maxTimeoutSeconds: 900`, and `extra: { name, version }` for EIP-712 domain. |
+| **3** | HTTP — off-chain | Mech returns HTTP 402 with JSON body: `{ "x402Version": 1, "accepts": [PaymentRequirements], "error": "Payment required" }`. The `PaymentRequirements` includes `scheme: "exact"`, `network`, `maxAmountRequired: quote`, `payTo: BalanceTrackerX402USDC`, `asset: USDC address`, `maxTimeoutSeconds: 900`, and `extra: { name, version }` for EIP-712 domain. |
 | **4** | Client — off-chain | Client's x402 library (`genai/connections/x402`) selects a matching `PaymentRequirements` entry, calls `exact.sign_payment_header()` which: generates a random 32-byte nonce, sets `validAfter = now - 60s` / `validBefore = now + maxTimeoutSeconds`, signs the EIP-712 `TransferWithAuthorization` typed data, and base64-encodes the result as a `PaymentPayload`. Client also signs `hash(requestData)` for the mech request signature. |
 | **5** | HTTP — off-chain | Client sends `POST /predict {tool, prompt}` with `X-Payment` header (base64-encoded `PaymentPayload`) and the request signature in the body. |
 | **6** | Mech (`/verify`) — off-chain | Mech decodes `X-Payment` header, verifies: valid EIP-3009 signature, client USDC balance >= quote, nonce not in local set, `validBefore` is in the future. Adds nonce to local set. Proceeds if all pass. |
 | **7** | Mech — off-chain | Mech executes tool, gets result. |
 | **8** | HTTP — off-chain | Mech returns HTTP 200. Body: `{ result }`. `X-Payment-Response` header: base64-encoded `{ "success": true, "status": "pending_settlement" }`. Client has their result. |
 | **9** | On-chain — batch | Mech Safe calls `OlasMech.deliverMarketplaceWithSignatures(requester=client, deliverWithSignatures=[{requestData, sig_4b, deliveryData}], deliveryRates=[quote], paymentData=<EIP-3009 params from step 4>)`. |
-| **10** | On-chain — batch | MechMarketplace calls `BalanceTrackerX402.adjustMechRequesterBalances(mech, client, deliveryRates[], paymentData)`. Inside, the overridden `_adjustInitialBalance` decodes `paymentData`, calls `USDC.transferWithAuthorization` — funds move from client wallet to BalanceTrackerX402 atomically. Requester balance is credited with received funds and debited by deliveryRate; mech balance is credited. This is a single call — `checkAndRecordDeliveryRates` is NOT involved (that function is only used in the `request()` path, which x402 skips). |
-| **11** | On-chain — batch | `BalanceTrackerX402.processPaymentByMultisig` (UNCHANGED): carves out marketplace fee, transfers remainder to Mech Safe. `collectedFees` updated. |
+| **10** | On-chain — batch | MechMarketplace calls `BalanceTrackerX402USDC.adjustMechRequesterBalances(mech, client, deliveryRates[], paymentData)`. Inside, the overridden `_adjustInitialBalance` decodes `paymentData`, calls `USDC.transferWithAuthorization` — funds move from client wallet to BalanceTrackerX402USDC atomically. Requester balance is credited with received funds and debited by deliveryRate; mech balance is credited. This is a single call — `checkAndRecordDeliveryRates` is NOT involved (that function is only used in the `request()` path, which x402 skips). |
+| **11** | On-chain — batch | `BalanceTrackerX402USDC.processPaymentByMultisig` (UNCHANGED): carves out marketplace fee, transfers remainder to Mech Safe. `collectedFees` updated. |
 
 ### What subgraphs see
 
@@ -289,7 +280,7 @@ All four request paths coexist in the mech with no breaking changes to existing 
 A single request with the following setup:
 
 > **Tool cost:** 0.01 USDC | **Marketplace fee:** 2% (200 bps) | **Quote:** 0.0102 USDC
-> **Client:** `0xClient` | **Mech:** `0xMech` (paymentType = X402_USDC) | **BalanceTrackerX402:** `0xBalX402`
+> **Client:** `0xClient` | **Mech:** `0xMech` (paymentType = X402_USDC) | **BalanceTrackerX402USDC:** `0xBalX402`
 
 ### HTTP Phase
 
@@ -327,7 +318,7 @@ paymentData   = abi.encode(from=0xClient, to=0xBalX402, value=10200,
                            validAfter, validBefore, nonce, v, r, s)
 ```
 
-BalanceTrackerX402 settlement:
+BalanceTrackerX402USDC settlement:
 
 ```
 USDC.transferWithAuthorization: 10200 units moves 0xClient -> 0xBalX402
@@ -349,31 +340,31 @@ mapMechBalances[0xMech] reset to 0
 
 ### 6.1 Smart Contracts
 
-**BalanceTrackerX402**
+**BalanceTrackerX402USDC**
 - Extends `BalanceTrackerFixedPriceToken`
 - Overrides `_adjustInitialBalance` to decode and execute EIP-3009 `paymentData` when present, bypassing `_getRequiredFunds` → `transferFrom` entirely
 - Falls back to `super._adjustInitialBalance` when `paymentData` is empty (standard pre-deposit flow)
 - Constructor: `(mechMarketplace, drainer, usdcTokenAddress)` — same as `BalanceTrackerFixedPriceToken`
 
-**MechFixedPriceTokenX402**
+**MechFixedPriceTokenX402USDC**
 - Extends `MechFixedPriceBase`
 - Defines `PAYMENT_TYPE = keccak256("X402USDC")` — routes to the x402 balance tracker
 - Identical to `MechFixedPriceTokenUSDC` except for the `PAYMENT_TYPE` constant
 
-**MechFactoryFixedPriceTokenX402**
+**MechFactoryFixedPriceTokenX402USDC**
 - Extends `MechFactoryBase`
-- Creates `MechFixedPriceTokenX402` instances via CREATE2
-- Identical to `MechFactoryFixedPriceTokenUSDC` except it deploys `MechFixedPriceTokenX402`
+- Creates `MechFixedPriceTokenX402USDC` instances via CREATE2
+- Identical to `MechFactoryFixedPriceTokenUSDC` except it deploys `MechFixedPriceTokenX402USDC`
 
 **Registration (by MechMarketplace owner):**
 
 ```solidity
 mechMarketplace.setPaymentTypeBalanceTrackers(
     [keccak256("X402USDC")],
-    [BalanceTrackerX402_address]
+    [BalanceTrackerX402USDC_address]
 );
 mechMarketplace.setMechFactoryStatuses(
-    [MechFactoryFixedPriceTokenX402_address],
+    [MechFactoryFixedPriceTokenX402USDC_address],
     [true]
 );
 ```
@@ -392,8 +383,8 @@ mechMarketplace.setMechFactoryStatuses(
 
 **In-Process Verification (Facilitator)**
 - `POST /verify` — decode `X-Payment` header, validate EIP-3009 signature, check client on-chain USDC balance >= quote, check nonce not in local set, check `validBefore` is in future. Return `{ valid, reason }`.
-- `GET /supported` — return `{ kinds: [{ x402Version: 1, scheme: "exact", network: "<chain>" }] }` per chain the mech supports
-- `GET /health` — liveness check; returns 503 after 3 consecutive settlement timeouts (see Section 3.6)
+
+(`/supported` and `/health` are intentionally omitted — see §3.4 for the rationale: 402 response carries supported config, and the mech's existing healthcheck owns the 503-on-settlement-timeout signal.)
 
 **Nonce Tracking**
 - Maintain in-memory nonce set, persist to `synchronized_data` for crash recovery
@@ -437,9 +428,9 @@ The mech request signature (Signature 2) must be added as an extension to the ge
 
 | Component | Change Required | Notes |
 |-----------|----------------|-------|
-| `BalanceTrackerX402` | New deployment | Extends `BalanceTrackerFixedPriceToken`. Overrides `_adjustInitialBalance` to handle EIP-3009 `paymentData`, bypassing `_getRequiredFunds`/`transferFrom` when `paymentData` is present. |
-| `MechFixedPriceTokenX402` | New deployment | Extends `MechFixedPriceBase`. Defines `PAYMENT_TYPE = keccak256("X402USDC")`. Routes to `BalanceTrackerX402` via marketplace. |
-| `MechFactoryFixedPriceTokenX402` | New deployment | Extends `MechFactoryBase`. Creates `MechFixedPriceTokenX402` instances. Registered via `setMechFactoryStatuses`. |
+| `BalanceTrackerX402USDC` | New deployment | Extends `BalanceTrackerFixedPriceToken`. Overrides `_adjustInitialBalance` to handle EIP-3009 `paymentData`, bypassing `_getRequiredFunds`/`transferFrom` when `paymentData` is present. |
+| `MechFixedPriceTokenX402USDC` | New deployment | Extends `MechFixedPriceBase`. Defines `PAYMENT_TYPE = keccak256("X402USDC")`. Routes to `BalanceTrackerX402USDC` via marketplace. |
+| `MechFactoryFixedPriceTokenX402USDC` | New deployment | Extends `MechFactoryBase`. Creates `MechFixedPriceTokenX402USDC` instances. Registered via `setMechFactoryStatuses`. |
 | `MechMarketplace` | None | `paymentData` flows through unchanged. Owner registration call only. |
 | `OlasMech` | None | `paymentData` passed through unchanged. |
 | `BalanceTrackerNATIVE` | None | Completely untouched. |
@@ -471,7 +462,7 @@ USDC addresses with EIP-3009 support (from `genai/connections/x402/chains.py`):
 | Polygon | 137 | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` |
 | Avalanche | 43114 | `0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E` |
 
-Each chain requires its own `BalanceTrackerX402` deployment (with the chain's USDC address). The `GET /supported` endpoint returns the list of `{ x402Version, scheme, network }` entries for all chains where the mech has a registered balance tracker.
+Each chain requires its own `BalanceTrackerX402USDC` deployment (with the chain's USDC address). On the mech side, the 402 response body's `accepts[]` array lists one entry per chain the mech has a registered balance tracker for; that's the multi-chain advertisement, and it replaces the standard x402 `GET /supported` payload (see §3.4).
 
 **v1 target chain:** Start with one chain where USDC supports EIP-3009. Gnosis is the primary mech chain and has USDC available. Verify EIP-3009 support on the specific USDC deployment before targeting.
 
@@ -501,6 +492,6 @@ An integration test proving a standard x402 client can complete the full flow:
 3. Use the `genai` x402 `requests` client to send a request to a test mech HTTP server
 4. Verify: HTTP 402 response with correct `x402PaymentRequiredResponse` schema → client auto-retries with `X-Payment` header → HTTP 200 with result and `X-Payment-Response` header
 5. Trigger the mech's batch settlement cycle
-6. Verify: on-chain USDC moved from client to BalanceTrackerX402, `mapMechBalances` updated, `processPaymentByMultisig` distributes fees correctly
+6. Verify: on-chain USDC moved from client to BalanceTrackerX402USDC, `mapMechBalances` updated, `processPaymentByMultisig` distributes fees correctly
 
 This validates "x402 compatible" as a claim with the actual Coinbase/genai client library.

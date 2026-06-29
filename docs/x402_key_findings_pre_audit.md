@@ -8,7 +8,7 @@
 
 | # | Severity | Finding | Component |
 |---|----------|---------|-----------|
-| H-1 | High | Settlement race condition — client can drain USDC between tool execution and on-chain settlement | BalanceTrackerX402 |
+| H-1 | High | Settlement race condition — client can drain USDC between tool execution and on-chain settlement | BalanceTrackerX402USDC |
 | M-1 | Medium | Nonce persistence — in-memory nonce set lost on mech crash, risk of tool re-execution | Off-chain (mech app) |
 | M-2 | Medium | **BLOCKER**: Gnosis bridged USDC EIP-3009 support unverified on-chain | Deployment |
 | L-1 | Low | Circuit breaker scope (per-chain vs global) and reset mechanism undefined | Off-chain (mech app) |
@@ -36,9 +36,9 @@ The x402 flow separates tool execution (immediate, off-chain) from payment settl
 
 ## ~~H-2: EIP-3009 Cross-Chain Replay~~ — REMOVED
 
-**Original claim**: `BalanceTrackerX402` should store `block.chainid` to prevent cross-chain replay.
+**Original claim**: `BalanceTrackerX402USDC` should store `block.chainid` to prevent cross-chain replay.
 
-**Why removed**: `BalanceTrackerX402` does not verify EIP-3009 signatures — USDC does. USDC's own EIP-712 domain separator already includes both `chainId` and `verifyingContract` (the USDC contract address, which differs per chain). Adding chainId validation to the BalanceTracker would be redundant gas cost with zero security benefit. The theoretical "same USDC address on two chains via CREATE2" scenario is not realistic — Circle deploys USDC via proxies with chain-specific governance.
+**Why removed**: `BalanceTrackerX402USDC` does not verify EIP-3009 signatures — USDC does. USDC's own EIP-712 domain separator already includes both `chainId` and `verifyingContract` (the USDC contract address, which differs per chain). Adding chainId validation to the BalanceTracker would be redundant gas cost with zero security benefit. The theoretical "same USDC address on two chains via CREATE2" scenario is not realistic — Circle deploys USDC via proxies with chain-specific governance.
 
 ## ~~M-1: paymentData ABI Decode Safety~~ — REMOVED
 
@@ -77,9 +77,9 @@ When `fee > 0` and `balance >= 1`, `marketplaceFee` is always `>= 1`. Additional
 
 ## N-3: Multi-Mech Isolation Mechanism Mis-Identified in Spec
 
-Spec Section 3.7 states: "Each mech has its own `BalanceTrackerX402` address (the `to` field in the EIP-3009 authorization)."
+Spec Section 3.7 states: "Each mech has its own `BalanceTrackerX402USDC` address (the `to` field in the EIP-3009 authorization)."
 
-**This is incorrect.** There is ONE `BalanceTrackerX402` per payment type, shared by ALL x402 mechs (`mapPaymentTypeBalanceTrackers[paymentType]` at MechMarketplace line 811). The `to` field in every x402 EIP-3009 authorization is the SAME address.
+**This is incorrect.** There is ONE `BalanceTrackerX402USDC` per payment type, shared by ALL x402 mechs (`mapPaymentTypeBalanceTrackers[paymentType]` at MechMarketplace line 811). The `to` field in every x402 EIP-3009 authorization is the SAME address.
 
 Cross-mech replay is still prevented, but by different mechanisms:
 1. **USDC nonce consumption**: Each `transferWithAuthorization` nonce is one-time use at the USDC contract level. Once consumed, it cannot be replayed by any mech.
@@ -96,6 +96,6 @@ Three original findings were removed after code review:
 - **M-1** (ABI decode safety): Atomic revert on bad `paymentData` is correct behavior; try/catch would allow unpaid deliveries.
 - **L-1** (fee rounding): Ceil division already prevents rounding to zero.
 
-**Critical function to audit post-implementation**: `BalanceTrackerX402._adjustInitialBalance()` — the only new on-chain logic touching user funds.
+**Critical function to audit post-implementation**: `BalanceTrackerX402USDC._adjustInitialBalance()` — the only new on-chain logic touching user funds.
 
 **Full review**: See [README.md](README.md) for complete analysis including contract checklist, architecture assessment, and recommendations.
