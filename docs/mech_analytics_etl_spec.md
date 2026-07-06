@@ -10,7 +10,7 @@ Written for any reviewer (engineer, PM, ops). Assumes you have read at most the 
 
 Today three different consumers (olas-website, townhall-kpis, mech-predict) each pull raw data from IPFS and subgraphs and compute their own metrics on the fly. That work is duplicated, slow, fragile (IPFS hangs, fuzzy title matches), and breaks the moment we stop publishing content to IPFS in Phase 2.
 
-We replace that with one Python service that reads the predict-api data lake, joins market resolutions from Omen + Polymarket subgraphs, computes every metric once, and stores the answers in a small dedicated Postgres. A public FastAPI in front of that Postgres serves a single endpoint that every consumer reads from.
+We replace that with one Python service that reads the predict-api data lake, joins market resolutions from Omen + Polymarket subgraphs, computes every metric once, and stores the answers in a small dedicated Postgres. A public FastAPI in front of that Postgres serves three read endpoints (agent economy, tool quality, instance distribution) that every consumer reads from.
 
 Net effect: one place computes metrics, every consumer just reads the answer.
 
@@ -86,7 +86,9 @@ Worse, once Phase 2 of the migration flips the default to offchain, the marketpl
                 │ read-only via DB connection
                 ▼
   Wildcard API (FastAPI, Cloudflare in front)
-     GET /metrics/agent-economy/{agent_name}
+     GET /metrics/ai-agent/{ai_agent_name}
+     GET /metrics/tool/{tool_name}
+     GET /metrics/ai-agent/{ai_agent_name}/instances
                 │
                 ├──► olas-website   (replaces 3 metric files)
                 ├──► townhall-kpis  (replaces NewMechFees + LegacyMechFees + PredictTrades joins)
@@ -114,7 +116,7 @@ Today's flow:
 5. Compute Brier and ROI in TypeScript. Cache in browser 12h.
 
 After:
-1. `fetch(WILDCARD_API + '/metrics/agent-economy/omenstrat')` returns a JSON with `tool_accuracy`, `roi`, `brier`, fully formed.
+1. `fetch(WILDCARD_API + '/metrics/ai-agent/omenstrat')` returns a JSON with `tool_accuracy`, `roi`, `brier`, fully formed.
 2. Pick the fields, render. Done.
 
 The fuzzy title join is gone because the ETL joins on `market_id` from `mech_requests.raw_content.extras.market_id` (request schema v2.0+ already carries it).
@@ -128,14 +130,17 @@ Today:
 - ROI math in `roi.ts`.
 
 After:
-- One call to `GET /metrics/agent-economy/{agent}` returns mech fees per chain + ROI per agent in the same response.
-- Fee totals come from `chain_aggregates`; per-agent ROI from `agent_aggregates`.
+- One call to `GET /metrics/ai-agent/{agent}` returns mech fees per chain (legacy snapshot + live ETL, merged) and per-agent ROI in the same response.
+- Live fee totals come from `chain_aggregates` rows with `source='etl_live'`. Legacy fee totals come from `chain_aggregates` rows with `source='legacy_snapshot'`, loaded once at legacy-subgraph decommission and never updated again.
+- Per-agent ROI comes from `agent_aggregates`.
+
+Legacy snapshot: since all legacy mechs are down, `LegacyMechFeesQuery` is not ported to the ETL. At decommission date T we run the query one last time, store the raw response plus a SHA-256 hash of it alongside the resulting `chain_aggregates` rows for audit, and shut the legacy subgraph down. Rolling windows (24h / 7d / 30d) drop the legacy contribution naturally as the window slides past `T + window_size`; the `all` window always includes it. See `docs/mech_analytics_etl_schema.md` §7 for the merge semantics and the `source` column.
 
 ### Consumer 3: mech-predict
 
 Two paths.
 
-**Daily report (normal scoring path)**: today reads from marketplace subgraph + IPFS + Omen subgraph + Polymarket Gamma. After: reads precomputed scores from `GET /metrics/agent-economy/{agent}` and renders a markdown report.
+**Daily report (normal scoring path)**: today reads from marketplace subgraph + IPFS + Omen subgraph + Polymarket Gamma. After: reads precomputed scores from `GET /metrics/ai-agent/{agent}` and renders a markdown report.
 
 **Recompute path (prompt sweeps, `--code-change`)**: today reads from subgraph + IPFS. After: direct read-only SQL against the predict-api data lake (no Wildcard API hop because this is internal and needs raw rows, not aggregates). The ETL does not own this path; mech-predict reads `mech_requests JOIN mech_responses` directly.
 
@@ -312,6 +317,8 @@ CREATE TABLE agent_aggregates (
     window_end              TIMESTAMPTZ NOT NULL,
     n_mech_requests         INTEGER     NOT NULL,
     mech_fee_usd            DOUBLE PRECISION,
+    n_mech_requests_settled INTEGER,                    -- subset of n_mech_requests whose joined market has resolved
+    mech_fee_usd_settled    DOUBLE PRECISION,           -- fees for that settled subset
     n_bets_omen             INTEGER,
     n_bets_polymarket       INTEGER,
     roi_omen                DOUBLE PRECISION,           -- (payout - cost) / cost, aggregated
@@ -324,6 +331,8 @@ CREATE TABLE agent_aggregates (
 ```
 
 The `agent_name` column is what the Wildcard API uses to resolve human-readable agent names. Populated from a small static mapping (Safe address to agent name) maintained in the ETL repo.
+
+`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe, not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are simply NULL. The `_settled` variants count only requests whose joined market has resolved (`resolved_outcome IS NOT NULL` on the corresponding `per_request_scores` row); requests with no market join are excluded from the settled variants. See §7.13 for why the settled split exists.
 
 ### 5.4 `mech_aggregates`
 
@@ -613,7 +622,7 @@ tool_brier   = (p_yes                      - outcome)²
 edge         = market_brier - tool_brier
 ```
 
-`market_prob_at_prediction` is the market's implied probability of Yes at the moment the tool was asked. Stored in `mech_requests.raw_content.extras.market_prob_at_prediction` for offchain rows (request schema v2.0+ writes it). For historical IPFS-backfilled rows, the value may be missing; in that case `edge` stays NULL.
+`market_prob_at_prediction` is the market's implied probability of Yes at the moment the tool was asked. Stored in `mech_requests.raw_content.extras.market_prob_at_prediction` for rows written live by the mech, onchain or offchain (request schema v2.0+ writes it). For historical IPFS-backfilled rows, the value may be missing; in that case `edge` stays NULL.
 
 Positive edge: the tool beat the market.
 
@@ -653,6 +662,8 @@ Trades for a window are only counted if their FPMM is resolved within that windo
 
 Where the trade-to-mech-request join happens: by `fpmm.id == market_id` from the mech request's raw_content. This is the join that replaces the fuzzy `questionTitle` match olas-website and townhall-kpis do today.
 
+**Boundary: trading ROI only.** This metric is bet cost vs bet payout. It deliberately excludes mech fees (reported separately as `mech_fee_usd`), OLAS staking rewards, and any token price conversion of rewards. Consumers that display a rewards-inclusive ROI (olas-website's `finalRoi`, trader's in-agent `final_roi`) compose it on their side: trading components and mech costs from this API, staking rewards from the staking subgraph, and an OLAS/USD price from their own source. Staking data is deliberately out of ETL scope (§16); a precomputed ratio cannot have rewards added to its numerator afterwards, which is why the API also exposes the underlying components rather than only the ratio.
+
 ### 7.11 Tool accuracy (per agent, per window)
 
 Mean directional accuracy across the mech requests this agent made, restricted to predictions on the relevant platform.
@@ -682,13 +693,30 @@ total_deliveries    = count of mech_responses with delivered_at in window
 
 USD conversion: today only USDC is used for prediction tools, so the conversion is the identity. If we add other payment tokens later, a small `payment_type_to_usd_rate` table in the ETL handles it.
 
+### 7.13 Settled mech costs (per agent, per window)
+
+```
+n_mech_requests         = count of mech_requests rows with requester = agent_address and requested_at in window
+mech_fee_usd            = sum(delivery_rate_usd) over those rows that were delivered
+n_mech_requests_settled = subset of the above whose joined market has resolved (resolved_outcome IS NOT NULL)
+mech_fee_usd_settled    = sum(delivery_rate_usd) over the settled subset
+```
+
+Why the settled split exists: trader's performance summary accounts mech costs on market resolution. Today it computes "settled = total - open" by fuzzy-matching its recent requests' `questionTitle` against open Omen markets, which stops working once request content is no longer published to IPFS. The `_settled` fields keep the same accounting semantics through the `market_id` join instead, so trader reads them directly and drops the open-market machinery.
+
+Semantics choice, stated explicitly: costs on unresolved markets stay invisible until the market resolves. That matches trader's numbers today (continuity), at the price of slightly deferring cost recognition. If we ever want immediate recognition, consumers switch to the unsuffixed totals; both variants are served.
+
+Requests are path-agnostic by construction: onchain and offchain rows both land in `mech_requests` (see §15, resolved), so these fields are correct for deployments running either request path, or switching between them.
+
 ---
 
 ## 8. Wildcard API
 
-Single endpoint. FastAPI in front of the metrics Postgres. No auth on the read side; Cloudflare in front.
+Three endpoints. FastAPI in front of the metrics Postgres. No auth on the read side; Cloudflare in front. They match the three natural axes of analysis: one agent's economy, one tool's quality, one service's instance distribution. Each is extensible by adding keys to its JSON, never by adding new routes. Today's olas-website "verify" links become curl invocations of these endpoints, preserving the verifiability pattern.
 
-`GET /metrics/agent-economy/{agent_name}` returns:
+### `GET /metrics/ai-agent/{ai_agent_name}`
+
+One JSON containing the agent's mech-request counts and fees (totals and settled-only variants), ROI per platform, tool accuracy per platform, the per-tool metric breakdown, and per-chain totals. Rolling windows (7d / 30d / all) plus per-day snapshots for ROI and tool accuracy.
 
 ```json
 {
@@ -696,7 +724,9 @@ Single endpoint. FastAPI in front of the metrics Postgres. No auth on the read s
   "agent_address": "0xabc...",
   "as_of": "2026-06-24T10:00:00Z",
   "windows": {
-    "7d":  { "n_mech_requests": 487, "mech_fee_usd": 23.40, "roi_omen": 0.12, "roi_polymarket": null,
+    "7d":  { "n_mech_requests": 487, "mech_fee_usd": 23.40,
+             "n_mech_requests_settled": 412, "mech_fee_usd_settled": 19.80,
+             "roi_omen": 0.12, "roi_polymarket": null,
              "tool_accuracy_omen": 0.62, "tool_accuracy_polymarket": null,
              "n_bets_omen": 142, "n_bets_polymarket": 0 },
     "30d": { ... },
@@ -719,6 +749,20 @@ Single endpoint. FastAPI in front of the metrics Postgres. No auth on the read s
 ```
 
 Composite call. Internally the route does three reads (agent_aggregates, tool_aggregates, chain_aggregates) and assembles. All cached in-process for 60s.
+
+### `GET /metrics/tool/{tool_name}`
+
+One JSON for a single tool with quality metrics that don't depend on the requester: Brier, calibration curve, ECE, BSS, edge, log loss, directional accuracy, no-signal rate. Same windows. Straight read of `tool_aggregates`.
+
+### `GET /metrics/ai-agent/{ai_agent_name}/instances`
+
+An array, one entry per agent instance (Safe) of that service: the same shape as the agent-level response but flattened, so consumers can bin into ROI distribution charts or other cross-instance views client-side. Each entry is keyed by the instance's Safe address, and an optional `safe_address` query param filters the array down to that single entry. This is how a running agent fetches its own numbers, since the Safe address is the only identity an agent knows about itself. Instance entries carry the same fields as the agent-level response, including the `all` window and the settled-only mech cost fields. Trader's Pearl performance summary reads `n_mech_requests_settled` and `mech_fee_usd_settled` from here and keeps composing ROI locally; its trade totals still come from the trader subgraph and staking rewards stay agent-side (§7.10 boundary note).
+
+### Windows and freshness
+
+"Window" means rolling (7d = the last 7 days from now), not a calendar date. The daily snapshots are a separate per-day time series alongside the rolling values.
+
+Values are as fresh as the last ETL cycle plus the mech's write lag, and settled fields additionally lag by market resolution plus the late-resolution sweep. Agents consuming these endpoints should cache the last good response and tolerate staleness of at least one cycle interval.
 
 Extensibility rule: new fields are added as new keys; never remove or rename. Consumers ignore unknown keys.
 
@@ -901,7 +945,7 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 - [ ] Roll-up jobs for tool, agent, mech, chain
 - [ ] FPMM trades ingest job
 - [ ] APScheduler wire-up
-- [ ] FastAPI app + `/metrics/agent-economy/{agent_name}` endpoint
+- [ ] FastAPI app + `/metrics/ai-agent/{ai_agent_name}`, `/metrics/tool/{tool_name}`, `/metrics/ai-agent/{ai_agent_name}/instances` endpoints
 - [ ] Static `agent_name → agent_address` mapping in the ETL repo
 - [ ] Dockerfile + deployment manifests (scheduler container + API container)
 - [ ] Observability: Prometheus metrics, lag alert, parse failure rate
@@ -927,11 +971,8 @@ Small list. All non-blocking for starting code.
 2. `agent_name → agent_address` mapping ownership. Static file in the ETL repo (recommended) vs a config table.
 3. Window definitions. Default 7d / 30d / all. Add 24h for ops visibility?
 4. FPMM trades subgraph endpoints and rate limits across Omen + Polymarket. Need to confirm we are within the public-tier quotas at our query rate.
-5. Onchain request data — where does it enter the pipeline? Onchain mech requests still exist and are still indexed by the marketplace subgraph. The predict-api data lake (`mech_requests` / `mech_responses`) only receives offchain rows written via `POST /mech/events` from the mech. Two options to consider:
-   - **Option A: ETL pulls onchain requests from the marketplace subgraph periodically** and normalizes them into the same `per_request_scores` shape. Keeps the data lake as the single source for offchain only; the analytics ETL becomes the place where onchain + offchain are unified.
-   - **Option B: The mech writes onchain requests to the predict-api Postgres alongside offchain ones**, so the data lake is the unified source. This means at some point we can stop relying on the mech for live subgraph reads — the data lake holds both sources.
-
-   Tradeoffs to work through: who owns the write path for onchain rows, what happens for onchain requests that were made before the mech started writing them (backfill from subgraph either way), how we handle the Phase 2 cutover where the marketplace subgraph stops populating prompt/tool/IPFS fields for offchain.
+5. Onchain request data — where does it enter the pipeline? **Resolved: Option B.** The mech writes onchain requests to the predict-api Postgres alongside offchain ones, so the data lake is the unified source for both request paths and the ETL never reads the marketplace subgraph. This is what makes every per-agent metric in this spec path-agnostic: a deployment running onchain, offchain, or switching between them produces the same rows. Onchain requests made before the mech started dual-writing enter via the historical backfill (item I).
+   - Option A (rejected): ETL pulls onchain requests from the marketplace subgraph periodically and normalizes them into the same shape. Kept the data lake offchain-only and left a permanent live subgraph dependency inside the ETL.
 
 ---
 
@@ -941,3 +982,5 @@ Small list. All non-blocking for starting code.
 - Item I (historical IPFS ETL) — separate workstream. The analytics ETL consumes its output but does not own the IPFS scraping.
 - Item K (consumer migrations of townhall-kpis, mech-predict daily report, market-resolver) — separate per-consumer workstreams, sequenced after this ETL is stable.
 - Auth on `POST /mech/events` — owned by the predict-api repo (see `docs/marketplace_api_spec.md` for the write-path contract). The ETL only reads, no auth concerns on the write side.
+- Staking rewards and OLAS price feeds — rewards-inclusive ROI (olas-website's `finalRoi`, trader's `final_roi`) is composed consumer-side from this API's components plus the consumer's own staking-subgraph and price reads. The ETL never touches staking data (§7.10 boundary note).
+- Portfolio-based ROI for non-predict agents (optimus) — that is a balance computation inside the agent (including its unspent BalanceTracker balance), not a metrics-pipeline concern. Such agents can still read their mech spend from `/instances?safe_address=` for reporting.
