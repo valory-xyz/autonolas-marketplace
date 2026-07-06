@@ -293,14 +293,19 @@ SELECT chain_id,
        SUM(total_deliveries)    AS total_deliveries
   FROM chain_aggregates
  WHERE window_kind = $1
-   AND window_end = (
-         SELECT MAX(window_end)
-           FROM chain_aggregates
-          WHERE window_kind = $1
-            AND source = 'etl_live'
+   AND (
+         window_end = (
+           SELECT MAX(window_end)
+             FROM chain_aggregates
+            WHERE window_kind = $1
+              AND source = 'etl_live'
+         )
+      OR (source = 'legacy_snapshot' AND window_kind = 'all')
        )
  GROUP BY chain_id;
 ```
+
+Why the two-branch filter: live rows (and the rolling-window snapshot rows, which are written with the same `window_end` as their live sibling) come through the first branch. The `all`-window snapshot row is frozen at `window_end = T` (the decommission date) and never advances, so pinning it to the live max would silently drop legacy history from every `all`-window read once the live rows move past `T`; the second branch includes it unconditionally.
 
 Why `GROUP BY chain_id` without grouping on source: the consumer wants one merged number per chain per window. The `source` column exists for audit and for the snapshot freeze, not for consumer-visible split.
 
