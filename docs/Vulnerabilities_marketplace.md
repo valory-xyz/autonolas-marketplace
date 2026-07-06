@@ -22,6 +22,7 @@
 | 14 | `trackerBalance` not decremented on withdrawal | BalanceTrackerNvmSubscriptionNative | Informative |
 | 15 | `SubscriptionProvider.fulfill()` permissionless | SubscriptionProvider | Informative |
 | 16 | `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits | BalanceTrackerNvmSubscriptionNative | Low |
+| 17 | Balance trackers remain fundable after all corresponding mech factories are disabled | BalanceTrackerBase, BalanceTrackerFixedPriceToken, BalanceTrackerFixedPriceNative | Informative |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -344,3 +345,38 @@ already reverts both `deposit()` and `depositFor()` on its token variant.
 Gnosis (`0x7D686bD1fD3CFF6E45a40165154D61043af7D67c`) and Base
 (`0x3d79737f05966c5925a04d1b04110006F5a072bE`) still run the pre-fix bytecode. They need to be
 redeployed before this vulnerability is closed on-chain.
+
+### 17. Balance trackers remain fundable after all corresponding mech factories are disabled
+**Severity**: Informative
+
+The marketplace owner can retire a payment branch by de-whitelisting its mech factories via
+`setMechFactoryStatuses(mechFactories, statuses)` with `false` statuses. After that, no new mech
+of that branch can be created, and if no such mech was ever created, no request can route to the
+branch's balance tracker: `MechMarketplace.request()` requires a marketplace-registered priority
+mech, and only the mech's payment type selects the balance tracker.
+
+However, balance trackers are immutable, permissionless contracts. Nothing marketplace-side can
+stop someone from calling `deposit()` / `depositFor()` on a retired branch's tracker, or from
+raw-transferring the underlying token to the tracker address:
+```solidity
+function deposit(uint256 amount) external virtual {
+    // Update account balances
+    mapRequesterBalances[msg.sender] += amount;
+
+    // Get tokens
+    IToken(token).transferFrom(msg.sender, address(this), amount);
+
+    emit Deposit(msg.sender, token, amount);
+}
+```
+Such funds can never be processed as payment — with no mech there is no request path, so
+`checkAndRecordDeliveryRates()`, `finalizeDeliveryRates()` and `processPayment()` are unreachable
+for that branch — and deposits remain withdrawable by the depositor at any time. The consequence
+is that "the tracker balance is zero" is not something any governance action can guarantee
+forever. What can be guaranteed is that the token can never flow through the payment lifecycle.
+
+Note that this immutability is a deliberate trustlessness property, not a defect: no owner,
+governance action, or upgrade can seize, freeze, or redirect requester deposits held by a
+balance tracker, and `drain()` can only ever move `collectedFees` (which stay at zero when no
+payments are processed). No change is recommended. Off-chain monitoring should not interpret a
+non-zero balance on a retired tracker as payment activity.
