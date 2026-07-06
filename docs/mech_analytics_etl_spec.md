@@ -134,7 +134,7 @@ After:
 - Live fee totals come from `chain_aggregates` rows with `source='etl_live'`. Legacy fee totals come from `chain_aggregates` rows with `source='legacy_snapshot'`, loaded once at legacy-subgraph decommission and never updated again.
 - Per-agent ROI comes from `agent_aggregates`.
 
-Legacy snapshot: since all legacy mechs are down, `LegacyMechFeesQuery` is not ported to the ETL. At decommission date T we run the query one last time, store the raw response plus a SHA-256 hash of it alongside the resulting `chain_aggregates` rows for audit, and shut the legacy subgraph down. Rolling windows (24h / 7d / 30d) drop the legacy contribution naturally as the window slides past `T + window_size`; the `all` window always includes it. See `docs/mech_analytics_etl_schema.md` §7 for the merge semantics and the `source` column.
+Legacy snapshot: since all legacy mechs are down, `LegacyMechFeesQuery` is not ported to the ETL. At decommission date T we run the query one last time, store the raw response plus a SHA-256 hash of it alongside the resulting `chain_aggregates` rows for audit, capture a per-day legacy tail series for the trailing 30 days (used to value any rolling-window overlap with the legacy period, expected all zeros since the mechs are already down), and shut the legacy subgraph down. Rolling windows (7d / 30d) carry only the legacy activity that falls inside the window, valued from the tail series, and drop it entirely once the window slides past `T + window_size`; the `all` window always includes the full snapshot. See `docs/mech_analytics_etl_schema.md` §7 for the merge semantics and the `source` column.
 
 ### Consumer 3: mech-predict
 

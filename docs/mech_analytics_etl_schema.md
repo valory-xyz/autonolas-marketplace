@@ -14,7 +14,7 @@ If a column or grain disagrees between this doc and the spec, this doc wins (it 
 - All money amounts stored as `DOUBLE PRECISION` for analytics ergonomics. Source rows in the data lake (`mech_requests.delivery_rate`) stay integer-unit; conversion to USD happens at ETL write time.
 - Aggregate tables key on `(grain columns, window_kind, window_end)` and are upserted in place on every roll-up cycle.
 - The ETL is the only writer. The Wildcard API holds read-only credentials. olas-website, townhall-kpis, and mech-predict never touch the metrics Postgres directly — they go through the API.
-- `window_kind` enum: `'24h' | '7d' | '30d' | 'all' | 'day'`. Rolling windows (`24h`, `7d`, `30d`, `all`) carry their `window_end` as the current cycle time; the `'day'` rows are per-calendar-day snapshots keyed by `window_end = end-of-day UTC`.
+- `window_kind` enum: `'7d' | '30d' | 'all' | 'day'`. Rolling windows (`7d`, `30d`, `all`) carry their `window_end` as the current cycle time; the `'day'` rows are per-calendar-day snapshots keyed by `window_end = end-of-day UTC`. A `24h` rolling window is an open question (ETL spec §15) — if adopted it slots in as one more rolling `window_kind` value with no schema change.
 
 ---
 
@@ -103,7 +103,7 @@ CREATE TABLE tool_aggregates (
     id                    BIGSERIAL        PRIMARY KEY,
     tool                  TEXT             NOT NULL,
     platform              TEXT             NOT NULL,        -- 'omen' | 'polymarket' | 'all'
-    window_kind           TEXT             NOT NULL,        -- '24h' | '7d' | '30d' | 'all'
+    window_kind           TEXT             NOT NULL,        -- '7d' | '30d' | 'all'
     window_start          TIMESTAMPTZ      NOT NULL,
     window_end            TIMESTAMPTZ      NOT NULL,
     n_predictions         INTEGER          NOT NULL,
@@ -132,7 +132,7 @@ SELECT platform, window_kind, n_predictions, n_resolved,
        ece, bss, calibration_curve, no_signal_rate
   FROM tool_aggregates
  WHERE tool = $1
-   AND window_kind IN ('24h', '7d', '30d', 'all')
+   AND window_kind IN ('7d', '30d', 'all')
    AND window_end = (SELECT MAX(window_end) FROM tool_aggregates WHERE tool = $1)
  ORDER BY platform, window_kind;
 ```
@@ -154,7 +154,7 @@ CREATE TABLE agent_aggregates (
     id                          BIGSERIAL        PRIMARY KEY,
     agent_address               TEXT             NOT NULL,    -- the Safe address
     agent_name                  TEXT,                         -- 'omenstrat' | 'polystrat' | 'optimus' | ...
-    window_kind                 TEXT             NOT NULL,    -- '24h' | '7d' | '30d' | 'all' | 'day'
+    window_kind                 TEXT             NOT NULL,    -- '7d' | '30d' | 'all' | 'day'
     window_start                TIMESTAMPTZ      NOT NULL,
     window_end                  TIMESTAMPTZ      NOT NULL,
     n_mech_requests             INTEGER          NOT NULL,
@@ -196,7 +196,7 @@ SELECT window_kind, n_mech_requests, mech_fee_usd,
        tool_accuracy_omen, tool_accuracy_polymarket
   FROM agent_aggregates
  WHERE agent_address = $1
-   AND window_kind IN ('24h', '7d', '30d', 'all')
+   AND window_kind IN ('7d', '30d', 'all')
    AND window_end = (SELECT MAX(window_end) FROM agent_aggregates
                      WHERE agent_address = $1 AND window_kind = '7d');
 
@@ -258,7 +258,7 @@ Rolled up per (chain_id, window, source). Backs the chain block of the ai-agent 
 CREATE TABLE chain_aggregates (
     id                       BIGSERIAL        PRIMARY KEY,
     chain_id                 INTEGER          NOT NULL,
-    window_kind              TEXT             NOT NULL,    -- '24h' | '7d' | '30d' | 'all'
+    window_kind              TEXT             NOT NULL,    -- '7d' | '30d' | 'all'
     window_start             TIMESTAMPTZ      NOT NULL,
     window_end               TIMESTAMPTZ      NOT NULL,
     source                   TEXT             NOT NULL,    -- 'etl_live' | 'legacy_snapshot'
@@ -280,7 +280,7 @@ Two row sources coexist:
 
 Snapshot rows are written for:
 - `window_kind='all'` — one row per chain, contributes to every `all`-window read forever.
-- Rolling `window_kind` values — the roll-up job writes a snapshot row alongside the live row only while `window_end <= T + window_size_seconds`. Past that, the rolling window contains no legacy activity by construction (the legacy mechs stopped producing rows at T), so no snapshot row is needed.
+- Rolling `window_kind` values — a rolling window ending at `t` in `(T, T + window_size)` overlaps the legacy period only over `[t - window_size, T]`, so the snapshot row is valued as the legacy activity inside that overlap, never the full legacy total. To make that computable, the decommission capture includes a per-day legacy tail series for the trailing 30 days (the largest window) alongside the totals; the roll-up job re-values the rolling snapshot row each cycle as the sum of the tail days still inside the window, and stops writing the row once that sum is zero (at the latest at `T + window_size`). In practice all legacy mechs were already down before decommission, so the tail series is expected to be all zeros and no rolling snapshot rows get written at all — the valuation rule exists so a nonzero tail cannot over-count.
 
 ### Which consumer queries hit it
 
