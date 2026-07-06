@@ -371,12 +371,18 @@ function deposit(uint256 amount) external virtual {
 ```
 Such funds can never be processed as payment — with no mech there is no request path, so
 `checkAndRecordDeliveryRates()`, `finalizeDeliveryRates()` and `processPayment()` are unreachable
-for that branch — and deposits remain withdrawable by the depositor at any time. The consequence
-is that "the tracker balance is zero" is not something any governance action can guarantee
-forever. What can be guaranteed is that the token can never flow through the payment lifecycle.
+for that branch. They can also never be reclaimed: balance trackers expose no requester-facing
+withdraw function — the internal `_withdraw()` is only called to pay mechs during
+`_processPayment()` — so a deposit to a retired branch's tracker is permanently stuck. This is a
+corollary of vulnerability #7 for retired branches, and it is self-inflicted: it requires a
+voluntary deposit to a branch that can never serve a request. The consequence is that "the
+tracker balance is zero" is not something any governance action can guarantee forever. What can
+be guaranteed is that the token can never flow through the payment lifecycle.
 
 Note that this immutability is a deliberate trustlessness property, not a defect: no owner,
 governance action, or upgrade can seize, freeze, or redirect requester deposits held by a
 balance tracker, and `drain()` can only ever move `collectedFees` (which stay at zero when no
-payments are processed). No change is recommended. Off-chain monitoring should not interpret a
-non-zero balance on a retired tracker as payment activity.
+payments are processed). Non-seizability is distinct from retrievability, however — the
+depositor cannot retrieve the funds either (see vulnerability #7). No change is recommended.
+Off-chain monitoring should interpret a non-zero balance on a retired tracker as stuck funds,
+not as payment activity.
