@@ -180,7 +180,15 @@ CREATE INDEX aa_day_idx
 
 ### Computation sources
 
-`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe (any tool, any requester type), not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are NULL. The `_settled` variants count only requests whose joined market has resolved (`per_request_scores.resolved_outcome IS NOT NULL`); requests with no market join at all (no `market_id`, parse failures, non-prediction tools) are excluded from the settled variants permanently — this is a small semantic divergence from trader's current "settled = total − open" definition, called out in spec §7.13, and `n_mech_requests_unjoined` is exposed so consumers can see the residual. Trader's in-agent performance summary consumes the settled pair — it replaces the open-market exclusion it does against the marketplace subgraph today.
+**Public fields (safe for olas-website / townhall-kpis / any Olas surface):**
+
+`n_mech_requests` and `mech_fee_usd` come from the on-chain `MechBalanceAdjusted` event stream filtered by `requester = agent_address` (see spec §4.6, §7.13). Sourced from the `new-mech-fees` subgraph (extended per-requester) or RPC `eth_getLogs` on the `BalanceTracker` contracts. Covers on-chain and off-chain requests uniformly because `MechBalanceAdjusted` fires on every mech-balance credit, including credits emitted during batched off-chain settlement. Never sourced from the `mech_requests` data lake.
+
+A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*` and `tool_accuracy_*` columns are NULL.
+
+**Internal-only fields (trader own operator UI and mech-predict only, must not be composed into any Olas-public metric):**
+
+`n_mech_requests_settled` / `mech_fee_usd_settled` require joining the on-chain event to the mech request body in the `mech_requests` data lake (for `market_id`), then joining that to the FPMM resolution in Omen/Polymarket. For off-chain requests the body is Valory-side, which is the reason these fields cannot power Olas-facing metrics under David's rule. `n_mech_requests_unjoined` is the residual count of requests where no `market_id` join is possible (parse failure, non-prediction tool, or no `extras.market_id` on the request body). Spec §7.13 has the details.
 
 ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
 
@@ -279,7 +287,7 @@ CREATE TABLE chain_aggregates (
 
 Two row sources coexist:
 
-- `source='etl_live'` — written by the `rollup_chain_aggregates` job on every interval from the live `per_request_scores` data. One row per (chain, window_kind, window_end). Constantly refreshed.
+- `source='etl_live'` — written by the `rollup_chain_aggregates` job on every interval from **on-chain `MechBalanceAdjusted` events indexed by the `new-mech-fees` subgraph** (or, if the subgraph is unavailable, direct RPC `eth_getLogs` on the `BalanceTracker` contracts). One row per (chain, window_kind, window_end). Constantly refreshed. Not sourced from the `mech_requests` data lake — the public per-chain fee totals must be on-chain-derived so they cover on-chain and off-chain requests uniformly (`MechBalanceAdjusted` fires on every mech-balance credit, including credits emitted during batched off-chain settlement via `deliverMarketplaceWithSignatures`).
 - `source='legacy_snapshot'` — written exactly once when the legacy autonolas-subgraph is decommissioned. Captures per-chain fee / request / delivery totals from the final `LegacyMechFeesQuery` run at decommission date `T`. Never updated thereafter. `snapshot_input_hash` holds the SHA-256 of the raw query response so the load can be audited.
 
 Snapshot rows are written for:
