@@ -162,7 +162,11 @@ CREATE TABLE agent_aggregates (
     mech_fee_usd                DOUBLE PRECISION,             -- sum of deliveryRate for those events, USD
     n_bets_omen                 INTEGER,                      -- from Predict subgraph FPMM trades
     n_bets_polymarket           INTEGER,
-    roi_omen                    DOUBLE PRECISION,             -- (payout - cost) / cost, NULL if cost = 0
+    total_cost_omen_usd         DOUBLE PRECISION,             -- sum of totalTradedSettled + totalFeesSettled on Omen bets in window
+    total_payout_omen_usd       DOUBLE PRECISION,             -- sum of realized payout from resolved Omen bets in window
+    total_cost_polymarket_usd   DOUBLE PRECISION,             -- same components on Polymarket
+    total_payout_polymarket_usd DOUBLE PRECISION,
+    roi_omen                    DOUBLE PRECISION,             -- (total_payout_omen_usd - total_cost_omen_usd) / total_cost_omen_usd, NULL if cost = 0
     roi_polymarket              DOUBLE PRECISION,
     tool_accuracy_omen          DOUBLE PRECISION,             -- mean directional accuracy on Omen (from per_request_scores)
     tool_accuracy_polymarket    DOUBLE PRECISION,
@@ -182,7 +186,11 @@ All fields on `agent_aggregates` are Olas-public and on-chain-sourced.
 
 `n_mech_requests` comes from the marketplace subgraph's `sender` entity, summing `sender.totalMarketplaceRequests` (bumped by `handleMarketplaceRequest` on the on-chain per-request path) and `sender.totalLegacyRequests` (bumped by `handleMarketplaceDeliveryWithSignatures` on the off-chain batched-settlement path). Both marketplace events are indexed by the requester Safe, so per-Safe counts land correctly under both request paths. `mech_fee_usd` is derived as `n_mech_requests × DEFAULT_MECH_FEE_USD` — the same formula olas-website's ROI histogram ships today (spec §7.2 line 154). Exact per-Safe fee sums will need `RequesterBalanceAdjusted` from the BalanceTracker when the marketplace transitions to dynamic per-request pricing; see spec §4.6 for the follow-up paths. Never sourced from the `mech_requests` data lake.
 
-A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*` and `tool_accuracy_*` columns are NULL.
+A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*`, `total_cost_*_usd`, `total_payout_*_usd`, and `tool_accuracy_*` columns are NULL.
+
+**Trading cost and payout components.** `total_cost_omen_usd` sums `totalTradedSettled + totalFeesSettled` per bet on Omen inside the window, mirroring the trader-side formula in `_fetch_trader_agent`. `total_payout_omen_usd` sums the realized payout on resolved Omen bets in the same window. Both source from the Predict subgraph's FPMM trades entity, restricted to `resolved = true`. Same shape for the two Polymarket columns.
+
+**Why the components ship next to the ratio.** Consumers that display a rewards-inclusive ROI (olas-website's `finalRoi`, trader's in-agent `final_roi`) can't recompose it from `roi_omen` alone — staking rewards can't be added to a precomputed ratio's numerator after the fact. With `total_cost_*_usd`, `total_payout_*_usd`, and `mech_fee_usd` all present per platform per window, consumers can compose `partialRoi = (payout - cost) / cost` and `finalRoi = (payout + staking_rewards - cost - mech_fee) / (cost + mech_fee)` on their side using their own staking-subgraph and price feeds. The finished `roi_*` ratios stay in the schema for cheap direct reads by consumers that only need the trading-only view.
 
 ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
 
@@ -190,12 +198,14 @@ Earlier revisions of this spec carried `n_mech_requests_settled` / `mech_fee_usd
 
 ### Which consumer queries hit it
 
-`GET /v1/metrics/ai-agent/{ai_agent_name}` resolves `agent_name → agent_address` from a static mapping, then issues two reads:
+`GET /v1/metrics/ai-agent/{ai_agent_name}` resolves `agent_name → service_id` from a small static mapping in the ETL repo (this is the human-readable naming layer), then enumerates the current Safes for that service by reading the on-chain ServiceRegistry contract (dynamic — every newly-registered Pearl agent appears automatically without an ETL config change). Then issues two reads per Safe:
 
 ```sql
 -- rolling windows for the headline numbers
 SELECT window_kind, n_mech_requests, mech_fee_usd,
        n_bets_omen, n_bets_polymarket,
+       total_cost_omen_usd, total_payout_omen_usd,
+       total_cost_polymarket_usd, total_payout_polymarket_usd,
        roi_omen, roi_polymarket,
        tool_accuracy_omen, tool_accuracy_polymarket
   FROM agent_aggregates
@@ -215,9 +225,9 @@ SELECT window_end::date AS day,
  ORDER BY window_end ASC;
 ```
 
-`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries the `agent_aggregates` fields for that Safe: `n_mech_requests`, `mech_fee_usd`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`, `n_bets_omen`, `n_bets_polymarket`, per rolling window (7d / 30d / all), plus the per-day snapshots of `roi_omen` / `roi_polymarket` / `tool_accuracy_omen` / `tool_accuracy_polymarket`. The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route maps `ai_agent_name → [agent_address, ...]` from the same static mapping the agent-level route uses, and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address.
+`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries the `agent_aggregates` fields for that Safe: `n_mech_requests`, `mech_fee_usd`, `total_cost_omen_usd`, `total_payout_omen_usd`, `total_cost_polymarket_usd`, `total_payout_polymarket_usd`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`, `n_bets_omen`, `n_bets_polymarket`, per rolling window (7d / 30d / all), plus the per-day snapshots of `roi_omen` / `roi_polymarket` / `tool_accuracy_omen` / `tool_accuracy_polymarket`. The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route resolves `ai_agent_name → service_id` from the static naming mapping, then enumerates the current Safes for that service from the on-chain ServiceRegistry (see the agent-level route above), and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address. Newly-registered Pearl agents appear automatically on the next request without a config change.
 
-An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the name-to-addresses fan-out. The route validates that the passed Safe belongs to the named agent by checking the same static mapping; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty response body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
+An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the enumeration. The route validates that the passed Safe belongs to the named service by looking it up in the ServiceRegistry against the resolved `service_id`; a `safe_address` that does not currently belong to `{ai_agent_name}`'s service returns HTTP 404 (empty response body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path, even if the Safe was previously registered under a different service. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
 ### Daily snapshot semantics
 

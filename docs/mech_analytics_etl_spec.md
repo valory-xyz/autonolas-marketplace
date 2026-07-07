@@ -504,7 +504,11 @@ CREATE TABLE agent_aggregates (
     mech_fee_usd            DOUBLE PRECISION,           -- sum of deliveryRate for those events, converted to USD
     n_bets_omen             INTEGER,                    -- from Predict subgraph FPMM trades
     n_bets_polymarket       INTEGER,
-    roi_omen                DOUBLE PRECISION,           -- (payout - cost) / cost, trading only
+    total_cost_omen_usd     DOUBLE PRECISION,           -- sum of totalTradedSettled + totalFeesSettled on Omen bets in window
+    total_payout_omen_usd   DOUBLE PRECISION,           -- sum of realized payout from resolved Omen bets in window
+    total_cost_polymarket_usd DOUBLE PRECISION,         -- same components on Polymarket
+    total_payout_polymarket_usd DOUBLE PRECISION,
+    roi_omen                DOUBLE PRECISION,           -- (total_payout_omen_usd - total_cost_omen_usd) / total_cost_omen_usd, trading only
     roi_polymarket          DOUBLE PRECISION,
     tool_accuracy_omen      DOUBLE PRECISION,           -- mean directional accuracy on Omen (from per_request_scores)
     tool_accuracy_polymarket DOUBLE PRECISION,
@@ -513,11 +517,13 @@ CREATE TABLE agent_aggregates (
 );
 ```
 
-The `agent_name` column is what the Wildcard API uses to resolve human-readable agent names. Populated from a small static mapping (Safe address to agent name) maintained in the ETL repo.
+The `agent_name` column is the display label the Wildcard API uses to resolve human-readable service names. Populated from the same small static `agent_name → service_id` mapping the API uses at the routing layer. The set of Safes under each service is NOT static — it comes from an on-chain ServiceRegistry read at rollup time, so a newly-registered Pearl instance appears in `agent_aggregates` on the next rollup cycle without a config change.
 
-Every field is Olas-public and ultimately sources from on-chain data: marketplace subgraph per-Safe request counters (mech spend approximation), `MechBalanceAdjusted` per-chain sums (chain-level fees), Predict subgraph FPMM trades (bets and ROI), on-chain FPMM resolutions (accuracy). Safe to render on olas-website and townhall-kpis.
+Every field is Olas-public and ultimately sources from on-chain data: marketplace subgraph per-Safe request counters (mech spend approximation), `MechBalanceAdjusted` per-chain sums (chain-level fees), Predict subgraph FPMM trades (bets, cost, payout, ROI), on-chain FPMM resolutions (accuracy). Safe to render on olas-website and townhall-kpis.
 
-`n_mech_requests` and `mech_fee_usd` cover **every** delivery the mech marketplace credits to this requester across the window (any tool, any request path, any deployment mode). A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its `roi_*` and `tool_accuracy_*` columns are NULL.
+`n_mech_requests` and `mech_fee_usd` cover **every** delivery the mech marketplace credits to this requester across the window (any tool, any request path, any deployment mode). A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its `roi_*`, `total_cost_*_usd`, `total_payout_*_usd`, and `tool_accuracy_*` columns are NULL.
+
+**Cost and payout components.** `total_cost_omen_usd` sums `totalTradedSettled + totalFeesSettled` per Omen bet inside the window (mirrors the trader-side ROI formula). `total_payout_omen_usd` sums realized payout on resolved Omen bets in the same window. Both come from the Predict subgraph's FPMM trades entity, restricted to resolved markets. Same shape for the two Polymarket columns. These ship alongside the finished `roi_*` ratios so consumers displaying a rewards-inclusive ROI (`finalRoi` on olas-website, trader's `final_roi`) can recompose it from components (a precomputed ratio can't have staking rewards added to its numerator after the fact) without a per-request drilldown.
 
 The rationale for not shipping a `_settled` / `_unjoined` split alongside these fields lives in §7.13.
 
@@ -944,12 +950,12 @@ One JSON for a single tool with quality metrics that don't depend on the request
 An array, one entry per agent instance (Safe) of that service, so consumers can bin into ROI distribution charts or other cross-instance views client-side. Each entry carries only the `agent_aggregates` fields for that Safe (not the tools or chain blocks that the agent-level response composes from `tool_aggregates` / `chain_aggregates` — those tables are not per-Safe). Concretely, each entry has:
 
 - `agent_address` (the Safe key) and `agent_name`
-- `windows`: `7d`, `30d`, `all` — each with `n_mech_requests`, `mech_fee_usd`, `n_bets_omen`, `n_bets_polymarket`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`. All fields are Olas-public and on-chain-sourced (see §7.13, §7.10).
+- `windows`: `7d`, `30d`, `all` — each with `n_mech_requests`, `mech_fee_usd`, `n_bets_omen`, `n_bets_polymarket`, `total_cost_omen_usd`, `total_payout_omen_usd`, `total_cost_polymarket_usd`, `total_payout_polymarket_usd`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`. All fields are Olas-public and on-chain-sourced (see §7.13, §7.10).
 - `daily`: the same per-day snapshot series the agent-level response exposes
 
-Consumers rendering the ROI distribution chart on olas-website plot `roi_omen` (or `roi_polymarket`) directly, one dot per Safe, into ROI bins client-side.
+Consumers rendering the ROI distribution chart on olas-website plot `roi_omen` (or `roi_polymarket`) directly, one dot per Safe, into ROI bins client-side. Consumers rendering a rewards-inclusive final ROI recompose it per Safe from `total_cost_*_usd`, `total_payout_*_usd`, `mech_fee_usd`, plus their own staking-subgraph and OLAS/USD price reads (§7.10).
 
-Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the passed Safe belongs to the named agent via the same static name-to-Safes mapping the agent-level route uses; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
+**Instance enumeration is dynamic.** The route resolves `ai_agent_name → service_id` from the static naming mapping and enumerates the current Safes for that service from the on-chain ServiceRegistry contract, so newly-registered Pearl agents appear in the array on the next request without an ETL config change. Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the passed Safe currently belongs to the named service by looking it up in the ServiceRegistry against the resolved `service_id`; a `safe_address` that does not currently belong to `{ai_agent_name}`'s service returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path, even if the Safe was previously registered under a different service. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
 Trader does not consume `/instances` at all — its ROI calculation reads on-chain `BalanceTracker.Deposit` events directly for off-chain pre-deposit cost and keeps its existing on-chain path unchanged. See Consumer 4 (§3) for the full rationale.
 
@@ -1141,7 +1147,8 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 - [ ] FPMM trades ingest job
 - [ ] APScheduler wire-up
 - [ ] FastAPI app + `/v1/metrics/ai-agent/{ai_agent_name}`, `/v1/metrics/tool/{tool_name}`, `/v1/metrics/ai-agent/{ai_agent_name}/instances` endpoints
-- [ ] Static `agent_name → agent_address` mapping in the ETL repo
+- [ ] Static `agent_name → service_id` mapping in the ETL repo (naming layer only)
+- [ ] `service_id → [safe_address, ...]` enumeration via on-chain ServiceRegistry read at rollup time
 - [ ] Dockerfile + deployment manifests (scheduler container + API container)
 - [ ] Observability: Prometheus metrics, lag alert, parse failure rate
 - [ ] Backfill mode runbook
@@ -1163,7 +1170,7 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 Small list. All non-blocking for starting code.
 
 1. Metrics Postgres infrastructure home. Same cluster as predict-api with a separate instance, or different cluster? Recommendation: same cluster, separate instance, separate backup policy.
-2. `agent_name → agent_address` mapping ownership. Static file in the ETL repo (recommended) vs a config table.
+2. `agent_name → agent_address` mapping ownership. **Resolved.** The `agent_name → service_id` mapping (a small static file in the ETL repo) stays static because it's the human-readable display layer, but the `service_id → [safe_address, ...]` step is dynamic — read from the on-chain ServiceRegistry at rollup time. Newly-registered Pearl instances appear automatically without a config change and the `/instances` route can't accidentally leak cross-service data because the Safe-to-service check runs against the same registry.
 3. Window definitions. Default 7d / 30d / all. Add 24h for ops visibility?
 4. FPMM trades subgraph endpoints and rate limits across Omen + Polymarket. Need to confirm we are within the public-tier quotas at our query rate.
 5. Onchain request data — where does it enter the pipeline? **Resolved: Option B.** The mech writes onchain requests to the predict-api Postgres alongside offchain ones, so the data lake is the unified source for both request paths' bodies and the ETL never reads the marketplace subgraph for request bodies. This is what makes the market-resolution join in `per_request_scores` path-agnostic. **Note the scope:** the data lake is the source only for `per_request_scores` (tool-quality metrics). It is NOT the source for the public `n_mech_requests` / `mech_fee_usd` — those come from the marketplace subgraph's per-Safe request counters (§4.6) to preserve the on-chain-source rule.
