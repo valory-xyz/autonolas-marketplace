@@ -29,8 +29,8 @@
         "address": "0x3515a36AF270070635Fa3E957e006aaF6078e658"
       },
       {
-        "name": "MechFactoryFixedPriceToken",
-        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "name": "MechFactoryFixedPriceTokenUSDC",
+        "artifact": "abis/0.8.30/MechFactoryFixedPriceTokenUSDC.json",
         "address": "0xF95BfBBA428dfb454Cd59C9c2d309bd6452d12A8",
         "token": "usdc"
       },
@@ -391,8 +391,8 @@
         "address": "0x4Cd816ce806FF1003ee459158A093F02AbF042a8"
       },
       {
-        "name": "MechFactoryFixedPriceToken",
-        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "name": "MechFactoryFixedPriceTokenUSDC",
+        "artifact": "abis/0.8.30/MechFactoryFixedPriceTokenUSDC.json",
         "address": "0x694e62BDF7Ff510A4EE66662cf4866A961a31653",
         "token": "usdc"
       },
@@ -451,8 +451,8 @@
         "address": "0xDd1252c5a75be568B5E6e50bA542680b38dbd68f"
       },
       {
-        "name": "MechFactoryFixedPriceToken",
-        "artifact": "abis/0.8.28/MechFactoryFixedPriceToken.json",
+        "name": "MechFactoryFixedPriceTokenUSDC",
+        "artifact": "abis/0.8.30/MechFactoryFixedPriceTokenUSDC.json",
         "address": "0xE3e5Df46060370af5Fd37B2aA11e7dac3cCB4bd0",
         "token": "usdc"
       },

@@ -23,6 +23,10 @@
 | 15 | `SubscriptionProvider.fulfill()` permissionless | SubscriptionProvider | Informative |
 | 16 | `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits | BalanceTrackerNvmSubscriptionNative | Low |
 | 17 | Balance trackers remain fundable after all corresponding mech factories are disabled | BalanceTrackerBase, BalanceTrackerFixedPriceToken, BalanceTrackerFixedPriceNative | Informative |
+| 18 | Celo native tracker fee-drain depends on the wrapped-native token configuration | BalanceTrackerFixedPriceNativeCelo | Low |
+| 19 | Balance-tracker re-map strands residual requester balances | MechMarketplace, BalanceTrackerBase | Low |
+| 20 | EIP-712 domain separator hashes `VERSION` via `abi.encode` | MechMarketplace | Informative |
+| 21 | Mech payout keying vs. service multisig authorization | BalanceTrackerBase, OlasMech | Informative |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -386,3 +390,101 @@ payments are processed). Non-seizability is distinct from retrievability, howeve
 depositor cannot retrieve the funds either (see vulnerability #7). No change is recommended.
 Off-chain monitoring should interpret a non-zero balance on a retired tracker as stuck funds,
 not as payment activity.
+
+### 18. Celo native tracker fee-drain depends on the wrapped-native token configuration
+**Severity**: Low
+
+`BalanceTrackerFixedPriceNativeCelo` overrides `_wrap(uint256)` to a no-op (on Celo the native
+asset is itself an ERC-20, so no wrapping is required), while the inherited `_drain` transfers
+the ERC-20 `wrappedNativeToken`:
+```solidity
+function _drain(uint256 amount) internal virtual override {
+    // Wrap native tokens
+    _wrap(amount);                                   // no-op on Celo
+    // Transfer to drainer
+    IToken(wrappedNativeToken).transfer(drainer, amount);
+    ...
+}
+```
+Requester deposits and mech payouts move native value, but the fee-drain path moves the ERC-20
+token. This is only correct when `wrappedNativeToken` is configured to the Celo native-as-ERC-20
+token, so that the contract's native balance is transferable through the ERC-20 interface. With
+a distinct wrapped token configured, `drain()` would revert on insufficient balance and collected
+fees would be undrainable (liveness only; requester and mech native paths are unaffected, no
+theft possible).
+
+The current deployment is verified correct: the on-chain `wrappedNativeToken` of the Celo tracker
+(`0x2E008211f34b25A7d7c102403c6C2C3B665a1abe`) is `0x471EcE3750Da237f93B8E339c536989b8978a438`,
+the CELO native-as-ERC-20 token.
+
+We recommend re-verifying this configuration at any future Celo redeploy, or adding a
+Celo-specific `_drain` that transfers native value directly.
+
+### 19. Balance-tracker re-map strands residual requester balances
+**Severity**: Low
+
+`MechMarketplace.setPaymentTypeBalanceTrackers` re-points a payment type to a new balance
+tracker without migrating state accrued in the previously-registered tracker. After a re-map,
+new requests route to the new tracker.
+
+The stranding is narrower than it first appears: `processPayment()`, `processPaymentByMultisig()`
+and `drain()` live on the tracker itself and read the fee through the tracker's immutable
+`mechMarketplace` reference, so accrued mech balances and `collectedFees` remain fully claimable
+from the superseded tracker after the re-map. What is genuinely stranded is
+`mapRequesterBalances`: requester balances are spend-only (see vulnerability #7), and after the
+re-map no new request can route to the old tracker to spend them (see also vulnerability #17 for
+the retired-branch variant).
+
+The setter is owner-only and the marketplace owner is a governance contract, so this is an
+operational concern rather than an attack vector. We recommend treating a tracker re-map as a
+migration event: announce it in advance so requesters spend down their balances and mechs claim
+their accrued payments, and drain collected fees before or as part of the re-map.
+
+### 20. EIP-712 domain separator hashes `VERSION` via `abi.encode`
+**Severity**: Informative
+
+In the MechMarketplace contract, `_computeDomainSeparator` hashes the version field as
+`keccak256(abi.encode(VERSION))` instead of the standard `keccak256(bytes(VERSION))`:
+```solidity
+DOMAIN_SEPARATOR_TYPE_HASH,
+keccak256("MechMarketplace"),
+keccak256(abi.encode(VERSION)),   // standard is keccak256(bytes(VERSION))
+block.chainid,
+address(this)
+```
+This deviates from EIP-712 and is inconsistent with the name field on the same lines. It is not
+exploitable: signing and verification both go through `getRequestId`, so signer and verifier
+compute the same value. The only consequence is that an external party using a standard EIP-712
+library would derive a different domain separator. This is a sibling of the deviation documented
+in vulnerability #2.
+
+We recommend hashing the version as `keccak256(bytes(VERSION))` at the next marketplace redeploy,
+together with the #2 typeHash fix.
+
+### 21. Mech payout keying vs. service multisig authorization
+**Severity**: Informative
+
+Mech revenue accrues keyed by the stable mech address (`mapMechBalances[mech]` in
+BalanceTrackerBase), while `processPaymentByMultisig` authorizes withdrawal through
+`IMech(mech).isOperator(msg.sender)` → `OlasMech.getOperator()` → the service's current
+`multisig` in the Service Registry, which is mutable across service redeployments. The multisig
+authorized to withdraw at claim time is therefore not intrinsically the multisig that earned the
+balance.
+
+This is not exploitable by a third party: re-pointing `service.multisig` requires reaching
+`PreRegistration`, which requires `unbond`, and `unbond` is gated to the genuine bonding operator
+(`ServiceManager.unbond` forwards `msg.sender` as the operator; `ServiceRegistry.unbond` reverts
+`OperatorHasNoInstances` for anyone else). A party that never bonded cannot unbond, cannot
+redeploy, and never satisfies the `isOperator` check.
+
+The residual concerns services where the owner and the operator are distinct parties. Once the
+owner terminates the service, `getOperator()` reverts (service state is no longer `Deployed`),
+so the operator can no longer withdraw accrued revenue. Recovering its bond requires `unbond`,
+which re-opens redeployment — after which the owner's newly deployed multisig passes
+`isOperator` and can claim the revenue accrued under the previous operator. The operator's
+choice is to forfeit either its bond or the accrued revenue; this is an owner-vs-operator trust
+assumption rather than a pure liveness property. In current deployments the service owner and
+operator are the same party, so no change is recommended. Operators of services they do not own
+should withdraw accrued balances promptly while the service is in `Deployed` state. A future
+version could snapshot the payout recipient at accrual time or settle mech balances on service
+state exit.
