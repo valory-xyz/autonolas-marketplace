@@ -186,9 +186,9 @@ CREATE INDEX aa_day_idx
 
 A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*` and `tool_accuracy_*` columns are NULL.
 
-**Internal-only fields (trader own operator UI and mech-predict only, must not be composed into any Olas-public metric):**
+**Internal-only fields (mech-predict analytics only, must not be composed into any Olas-public metric):**
 
-`n_mech_requests_settled` / `mech_fee_usd_settled` require joining the on-chain event to the mech request body in the `mech_requests` data lake (for `market_id`), then joining that to the FPMM resolution in Omen/Polymarket. For off-chain requests the body is Valory-side, which is the reason these fields cannot power Olas-facing metrics under David's rule. `n_mech_requests_unjoined` is the residual count of requests where no `market_id` join is possible (parse failure, non-prediction tool, or no `extras.market_id` on the request body). Spec §7.13 has the details.
+`n_mech_requests_settled` / `mech_fee_usd_settled` require joining the on-chain event to the mech request body in the `mech_requests` data lake (for `market_id`), then joining that to the FPMM resolution in Omen/Polymarket. For off-chain requests the body is Valory-side, which is the reason these fields cannot power Olas-facing metrics under David's rule. `n_mech_requests_unjoined` is the residual count of requests where no `market_id` join is possible (parse failure, non-prediction tool, or no `extras.market_id` on the request body). Trader is deliberately NOT a consumer of these fields — it computes its cost side from on-chain `BalanceTracker.Deposit` events instead. Spec §7.13 has the details.
 
 ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
 
