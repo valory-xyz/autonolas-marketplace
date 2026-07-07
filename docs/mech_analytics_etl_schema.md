@@ -26,7 +26,7 @@ If a column or grain disagrees between this doc and the spec, this doc wins (it 
 | [`tool_aggregates`](#4-tool_aggregates) | (tool, platform, window) | `GET /v1/metrics/tool/{tool_name}` |
 | [`agent_aggregates`](#5-agent_aggregates) | (agent, window) and (agent, day) | `GET /v1/metrics/ai-agent/{ai_agent_name}`, `GET /v1/metrics/ai-agent/{ai_agent_name}/instances` |
 | [`mech_aggregates`](#6-mech_aggregates) | (mech, window) | `GET /v1/metrics/ai-agent/{ai_agent_name}` (mech context block) |
-| [`chain_aggregates`](#7-chain_aggregates) | (chain, window) | `GET /v1/metrics/ai-agent/{ai_agent_name}` (chain block) |
+| [`chain_aggregates`](#7-chain_aggregates) | (chain, window, source) | `GET /v1/metrics/ai-agent/{ai_agent_name}` (chain block) |
 | [`cursor_state`](#8-cursor_state) | one row per ETL job | not consumer-facing; ETL bookmark |
 
 ---
@@ -161,6 +161,7 @@ CREATE TABLE agent_aggregates (
     mech_fee_usd                DOUBLE PRECISION,
     n_mech_requests_settled     INTEGER,                      -- subset of n_mech_requests whose joined market has resolved
     mech_fee_usd_settled        DOUBLE PRECISION,             -- fees for that settled subset
+    n_mech_requests_unjoined    INTEGER,                      -- subset with no market_id join (parse failure, non-prediction tool, no extras.market_id); excluded from _settled forever, exposed so consumers can see what settled costs omit
     n_bets_omen                 INTEGER,
     n_bets_polymarket           INTEGER,
     roi_omen                    DOUBLE PRECISION,             -- (payout - cost) / cost, NULL if cost = 0
@@ -179,7 +180,7 @@ CREATE INDEX aa_day_idx
 
 ### Computation sources
 
-`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe (any tool, any requester type), not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are NULL. The `_settled` variants count only requests whose joined market has resolved (`per_request_scores.resolved_outcome IS NOT NULL`); requests with no market join are excluded from the settled variants. Trader's in-agent performance summary consumes the settled pair — it replaces the open-market exclusion it does against the marketplace subgraph today (see spec §7.13).
+`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe (any tool, any requester type), not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are NULL. The `_settled` variants count only requests whose joined market has resolved (`per_request_scores.resolved_outcome IS NOT NULL`); requests with no market join at all (no `market_id`, parse failures, non-prediction tools) are excluded from the settled variants permanently — this is a small semantic divergence from trader's current "settled = total − open" definition, called out in spec §7.13, and `n_mech_requests_unjoined` is exposed so consumers can see the residual. Trader's in-agent performance summary consumes the settled pair — it replaces the open-market exclusion it does against the marketplace subgraph today.
 
 ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
 
@@ -191,6 +192,7 @@ ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM tra
 -- rolling windows for the headline numbers
 SELECT window_kind, n_mech_requests, mech_fee_usd,
        n_mech_requests_settled, mech_fee_usd_settled,
+       n_mech_requests_unjoined,
        n_bets_omen, n_bets_polymarket,
        roi_omen, roi_polymarket,
        tool_accuracy_omen, tool_accuracy_polymarket
@@ -211,7 +213,9 @@ SELECT window_end::date AS day,
  ORDER BY window_end ASC;
 ```
 
-`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array of these objects, one per agent instance (Safe) of the service. The route maps `ai_agent_name → [agent_address, ...]` and runs the same two queries per agent. Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the name-to-addresses fan-out. This is how a running agent fetches its own numbers, since the Safe address is the only identity an agent knows about itself.
+`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries only the `agent_aggregates` fields for that Safe (windows, mech-request counts and fees including the settled and unjoined variants, ROI per platform, tool accuracy per platform, plus the per-day snapshots the agent-level endpoint exposes). The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route maps `ai_agent_name → [agent_address, ...]` from the same static mapping the agent-level route uses, and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address.
+
+An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the name-to-addresses fan-out. The route validates that the passed Safe belongs to the named agent by checking the same static mapping; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty response body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
 ### Daily snapshot semantics
 

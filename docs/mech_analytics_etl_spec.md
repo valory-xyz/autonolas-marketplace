@@ -86,9 +86,9 @@ Worse, once Phase 2 of the migration flips the default to offchain, the marketpl
                 │ read-only via DB connection
                 ▼
   Wildcard API (FastAPI, Cloudflare in front)
-     GET /metrics/ai-agent/{ai_agent_name}
-     GET /metrics/tool/{tool_name}
-     GET /metrics/ai-agent/{ai_agent_name}/instances
+     GET /v1/metrics/ai-agent/{ai_agent_name}
+     GET /v1/metrics/tool/{tool_name}
+     GET /v1/metrics/ai-agent/{ai_agent_name}/instances
                 │
                 ├──► olas-website   (replaces 3 metric files)
                 ├──► townhall-kpis  (replaces NewMechFees + LegacyMechFees + PredictTrades joins)
@@ -130,7 +130,7 @@ Today:
 - ROI math in `roi.ts`.
 
 After:
-- One call to `GET /metrics/ai-agent/{agent}` returns mech fees per chain (legacy snapshot + live ETL, merged) and per-agent ROI in the same response.
+- One call to `GET /v1/metrics/ai-agent/{ai_agent_name}` returns mech fees per chain (legacy snapshot + live ETL, merged) and per-agent ROI in the same response.
 - Live fee totals come from `chain_aggregates` rows with `source='etl_live'`. Legacy fee totals come from `chain_aggregates` rows with `source='legacy_snapshot'`, loaded once at legacy-subgraph decommission and never updated again.
 - Per-agent ROI comes from `agent_aggregates`.
 
@@ -140,7 +140,7 @@ Legacy snapshot: since all legacy mechs are down, `LegacyMechFeesQuery` is not p
 
 Two paths.
 
-**Daily report (normal scoring path)**: today reads from marketplace subgraph + IPFS + Omen subgraph + Polymarket Gamma. After: reads precomputed scores from `GET /metrics/ai-agent/{agent}` and renders a markdown report.
+**Daily report (normal scoring path)**: today reads from marketplace subgraph + IPFS + Omen subgraph + Polymarket Gamma. After: reads precomputed scores from `GET /v1/metrics/ai-agent/{ai_agent_name}` and renders a markdown report.
 
 **Recompute path (prompt sweeps, `--code-change`)**: today reads from subgraph + IPFS. After: direct read-only SQL against the predict-api data lake (no Wildcard API hop because this is internal and needs raw rows, not aggregates). The ETL does not own this path; mech-predict reads `mech_requests JOIN mech_responses` directly.
 
@@ -319,6 +319,7 @@ CREATE TABLE agent_aggregates (
     mech_fee_usd            DOUBLE PRECISION,
     n_mech_requests_settled INTEGER,                    -- subset of n_mech_requests whose joined market has resolved
     mech_fee_usd_settled    DOUBLE PRECISION,           -- fees for that settled subset
+    n_mech_requests_unjoined INTEGER,                   -- subset with no market_id join; excluded from _settled forever (see §7.13)
     n_bets_omen             INTEGER,
     n_bets_polymarket       INTEGER,
     roi_omen                DOUBLE PRECISION,           -- (payout - cost) / cost, aggregated
@@ -332,7 +333,7 @@ CREATE TABLE agent_aggregates (
 
 The `agent_name` column is what the Wildcard API uses to resolve human-readable agent names. Populated from a small static mapping (Safe address to agent name) maintained in the ETL repo.
 
-`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe, not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are simply NULL. The `_settled` variants count only requests whose joined market has resolved (`resolved_outcome IS NOT NULL` on the corresponding `per_request_scores` row); requests with no market join are excluded from the settled variants. See §7.13 for why the settled split exists.
+`n_mech_requests` and `mech_fee_usd` are computed over **all** `mech_requests` rows for the Safe, not just rows that produced a `per_request_scores` entry. A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its ROI and tool-accuracy columns are simply NULL. The `_settled` variants count only requests whose joined market has resolved (`resolved_outcome IS NOT NULL` on the corresponding `per_request_scores` row); requests with no market join at all (parse failures, non-prediction tools, no `extras.market_id`) are excluded from the settled variants permanently, and `n_mech_requests_unjoined` exposes that residual so consumers can see what settled costs omit. See §7.13 for the divergence from trader's current "settled = total − open" definition.
 
 ### 5.4 `mech_aggregates`
 
@@ -355,22 +356,9 @@ CREATE TABLE mech_aggregates (
 
 ### 5.5 `chain_aggregates`
 
-Rolled-up per (chain_id, window).
+Rolled-up per (chain_id, window, source). Two row sources — `etl_live` (roll-up job) and `legacy_snapshot` (one-time capture at legacy-subgraph decommission) — with an audit hash on the snapshot rows and a two-branch merge on read.
 
-```sql
-CREATE TABLE chain_aggregates (
-    id                      BIGSERIAL   PRIMARY KEY,
-    chain_id                INTEGER     NOT NULL,
-    window_kind             TEXT        NOT NULL,
-    window_start            TIMESTAMPTZ NOT NULL,
-    window_end              TIMESTAMPTZ NOT NULL,
-    total_mech_fees_usd     DOUBLE PRECISION,
-    total_requests          INTEGER,
-    total_deliveries        INTEGER,
-    computed_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (chain_id, window_kind, window_end)
-);
-```
+Full DDL and merge semantics: see [`docs/mech_analytics_etl_schema.md` §7](mech_analytics_etl_schema.md#7-chain_aggregates). The schema doc is the reference; the pointer here avoids drift.
 
 ### 5.6 `cursor_state`
 
@@ -696,15 +684,20 @@ USD conversion: today only USDC is used for prediction tools, so the conversion 
 ### 7.13 Settled mech costs (per agent, per window)
 
 ```
-n_mech_requests         = count of mech_requests rows with requester = agent_address and requested_at in window
-mech_fee_usd            = sum(delivery_rate_usd) over those rows that were delivered
-n_mech_requests_settled = subset of the above whose joined market has resolved (resolved_outcome IS NOT NULL)
-mech_fee_usd_settled    = sum(delivery_rate_usd) over the settled subset
+n_mech_requests           = count of mech_requests rows with requester = agent_address and requested_at in window
+mech_fee_usd              = sum(delivery_rate_usd) over the delivered subset of those rows
+n_mech_requests_settled   = subset of n_mech_requests whose joined market has resolved (resolved_outcome IS NOT NULL)
+mech_fee_usd_settled      = sum(delivery_rate_usd) over the delivered ∩ settled subset
+n_mech_requests_unjoined  = subset of n_mech_requests with no market_id join at all (parse failure, non-prediction tool, no extras.market_id on the request)
 ```
 
-Why the settled split exists: trader's performance summary accounts mech costs on market resolution. Today it computes "settled = total - open" by fuzzy-matching its recent requests' `questionTitle` against open Omen markets, which stops working once request content is no longer published to IPFS. The `_settled` fields keep the same accounting semantics through the `market_id` join instead, so trader reads them directly and drops the open-market machinery.
+Why the settled split exists: trader's performance summary accounts mech costs on market resolution. Today it computes "settled = total − open" by fuzzy-matching its recent requests' `questionTitle` against open Omen markets, which stops working once request content is no longer published to IPFS. The `_settled` fields replace that mechanism through the `market_id` join, so trader reads them directly and drops the open-market machinery.
 
-Semantics choice, stated explicitly: costs on unresolved markets stay invisible until the market resolves. That matches trader's numbers today (continuity), at the price of slightly deferring cost recognition. If we ever want immediate recognition, consumers switch to the unsuffixed totals; both variants are served.
+**Divergence from today's semantics — explicit.** Trader's current "settled = total − open" definition counts a request as settled whenever it is *not* matched to an open market; a request that never matches any market at all (no `market_id`, malformed tool output, non-prediction tools) is counted as settled immediately. The new `_settled` definition here is the opposite for that subset: unjoined requests are excluded from `_settled` forever, so their fees never appear in settlement-based cost accounting. For an all-prediction agent the residual is expected to be small, but it is not zero and consumers composing rewards-inclusive ROI on top would otherwise see a systematic cost understatement. `n_mech_requests_unjoined` is served alongside the `_settled` pair so a consumer can quantify what the settled numbers omit — trader's summary should show this residual next to the settled figures, or add it back into cost accounting after a grace period, whichever the consumer prefers. No unjoined-fee sum is served today; if a consumer needs it we add `mech_fee_usd_unjoined` additively (§8 extensibility rule).
+
+Semantics choice on unresolved markets: costs on joined-but-unresolved markets stay invisible until the market resolves. That matches trader's numbers today for the joined subset (continuity), at the price of slightly deferring cost recognition. If we ever want immediate recognition, consumers switch to the unsuffixed totals; both variants are served.
+
+Wording note: `mech_fee_usd` counts fees over the delivered subset (only delivered requests incur a fee); `n_mech_requests_settled` counts requests (including any that were not delivered — this is intentional, so the count matches the "requests whose markets resolved" language), while `mech_fee_usd_settled` sums fees over the delivered ∩ settled subset since undelivered requests have no fee to sum. The count and the fee use the same base filter (requester + window + resolution), the fee just additionally requires delivery.
 
 Requests are path-agnostic by construction: onchain and offchain rows both land in `mech_requests` (see §15, resolved), so these fields are correct for deployments running either request path, or switching between them.
 
@@ -714,7 +707,7 @@ Requests are path-agnostic by construction: onchain and offchain rows both land 
 
 Three endpoints. FastAPI in front of the metrics Postgres. No auth on the read side; Cloudflare in front. They match the three natural axes of analysis: one agent's economy, one tool's quality, one service's instance distribution. Each is extensible by adding keys to its JSON, never by adding new routes. Today's olas-website "verify" links become curl invocations of these endpoints, preserving the verifiability pattern.
 
-### `GET /metrics/ai-agent/{ai_agent_name}`
+### `GET /v1/metrics/ai-agent/{ai_agent_name}`
 
 One JSON containing the agent's mech-request counts and fees (totals and settled-only variants), ROI per platform, tool accuracy per platform, the per-tool metric breakdown, and per-chain totals. Rolling windows (7d / 30d / all) plus per-day snapshots for ROI and tool accuracy.
 
@@ -726,6 +719,7 @@ One JSON containing the agent's mech-request counts and fees (totals and settled
   "windows": {
     "7d":  { "n_mech_requests": 487, "mech_fee_usd": 23.40,
              "n_mech_requests_settled": 412, "mech_fee_usd_settled": 19.80,
+             "n_mech_requests_unjoined": 3,
              "roi_omen": 0.12, "roi_polymarket": null,
              "tool_accuracy_omen": 0.62, "tool_accuracy_polymarket": null,
              "n_bets_omen": 142, "n_bets_polymarket": 0 },
@@ -750,13 +744,21 @@ One JSON containing the agent's mech-request counts and fees (totals and settled
 
 Composite call. Internally the route does three reads (agent_aggregates, tool_aggregates, chain_aggregates) and assembles. All cached in-process for 60s.
 
-### `GET /metrics/tool/{tool_name}`
+### `GET /v1/metrics/tool/{tool_name}`
 
 One JSON for a single tool with quality metrics that don't depend on the requester: Brier, calibration curve, ECE, BSS, edge, log loss, directional accuracy, no-signal rate. Same windows. Straight read of `tool_aggregates`.
 
-### `GET /metrics/ai-agent/{ai_agent_name}/instances`
+### `GET /v1/metrics/ai-agent/{ai_agent_name}/instances`
 
-An array, one entry per agent instance (Safe) of that service: the same shape as the agent-level response but flattened, so consumers can bin into ROI distribution charts or other cross-instance views client-side. Each entry is keyed by the instance's Safe address, and an optional `safe_address` query param filters the array down to that single entry. This is how a running agent fetches its own numbers, since the Safe address is the only identity an agent knows about itself. Instance entries carry the same fields as the agent-level response, including the `all` window and the settled-only mech cost fields. Trader's Pearl performance summary reads `n_mech_requests_settled` and `mech_fee_usd_settled` from here and keeps composing ROI locally; its trade totals still come from the trader subgraph and staking rewards stay agent-side (§7.10 boundary note).
+An array, one entry per agent instance (Safe) of that service, so consumers can bin into ROI distribution charts or other cross-instance views client-side. Each entry carries only the `agent_aggregates` fields for that Safe (not the tools or chain blocks that the agent-level response composes from `tool_aggregates` / `chain_aggregates` — those tables are not per-Safe). Concretely, each entry has:
+
+- `agent_address` (the Safe key) and `agent_name`
+- `windows`: `7d`, `30d`, `all` — each with `n_mech_requests`, `mech_fee_usd`, `n_mech_requests_settled`, `mech_fee_usd_settled`, `n_mech_requests_unjoined`, `n_bets_omen`, `n_bets_polymarket`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`
+- `daily`: the same per-day snapshot series the agent-level response exposes
+
+Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the passed Safe belongs to the named agent via the same static name-to-Safes mapping the agent-level route uses; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
+
+Trader's Pearl performance summary reads `n_mech_requests_settled` and `mech_fee_usd_settled` from here and keeps composing ROI locally; its trade totals still come from the trader subgraph and staking rewards stay agent-side (§7.10 boundary note). It should surface `n_mech_requests_unjoined` alongside the settled numbers so the residual is visible to consumers.
 
 ### Windows and freshness
 
@@ -945,7 +947,7 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 - [ ] Roll-up jobs for tool, agent, mech, chain
 - [ ] FPMM trades ingest job
 - [ ] APScheduler wire-up
-- [ ] FastAPI app + `/metrics/ai-agent/{ai_agent_name}`, `/metrics/tool/{tool_name}`, `/metrics/ai-agent/{ai_agent_name}/instances` endpoints
+- [ ] FastAPI app + `/v1/metrics/ai-agent/{ai_agent_name}`, `/v1/metrics/tool/{tool_name}`, `/v1/metrics/ai-agent/{ai_agent_name}/instances` endpoints
 - [ ] Static `agent_name → agent_address` mapping in the ETL repo
 - [ ] Dockerfile + deployment manifests (scheduler container + API container)
 - [ ] Observability: Prometheus metrics, lag alert, parse failure rate
