@@ -104,35 +104,93 @@ One pipeline. Each consumer reads pre-computed JSON. No subgraph or IPFS calls a
 ### Consumer 1: olas-website
 
 Files today:
-- `common-util/api/predict/tool-accuracy.ts`
-- `common-util/api/predict/omenstrat-roi.ts`
-- `common-util/api/predict/polystrat-roi.ts`
-- `pages/api/predict-metrics.js` (Predict ROI aggregate)
-- `pages/api/mech-fees.js` (Marketplace Turnover, Claimed / Unclaimed)
+- `pages/api/mech-fees.js` — Marketplace Turnover, Claimed / Unclaimed.
+- `pages/api/predict-metrics.js` — Predict-page aggregate `partialRoi` / `finalRoi`.
+- `common-util/api/predict/roi-distribution.ts` — the per-instance ROI histogram, cron-maintained.
+- `common-util/api/predict/tool-accuracy.ts` — per-tool accuracy KPI.
 
-Today's flow (Predict ROI):
-1. GraphQL the mech subgraph for `Global.totalRequests`.
-2. GraphQL the mech subgraph for the last-4-days requests with `questionTitle`.
-3. GraphQL Omen for currently-open FPMM `question` strings.
-4. Fuzzy-match `questionTitle` to open-market titles; subtract.
-5. Multiply remaining count by hardcoded `DEFAULT_MECH_FEE = 0.01`.
-6. Sum with Omen's `totalTraded` + `totalFees` for cost side; combine with `totalPayout` for `partialRoi`.
+Four independent flows here. Each is worth walking on its own because the current sourcing is different for each.
 
-Two independent breaks under off-chain:
-- The mech subgraph's `Global.totalRequests` only counts on-chain requests, so mech cost undercounts once off-chain requests are enabled.
-- `parsedRequest.questionTitle` doesn't exist for off-chain rows (no IPFS content on-chain), so the open-market exclusion silently returns 0.
+#### 1a. Marketplace Turnover and Claimed / Unclaimed (Mech page)
 
-After (both fixed by the ETL):
-1. `fetch(WILDCARD_API + '/v1/metrics/ai-agent/omenstrat')` returns a JSON with trade PnL components, `mech_fee_usd`, `tool_accuracy`, per-tool Brier — all fully formed and both fixes applied simultaneously.
-2. Pick the fields, render. Done.
+Reads `Global.totalFeesInUSD` and `Global.totalFeesOutUSD` from the `new-mech-fees` subgraph, aggregated across gnosis, base, and legacy. Rendered as one turnover number plus a payment-flow visualization (Claimed = totalFeesOut, Unclaimed = totalFeesIn − totalFeesOut).
 
-`mech_fee_usd` here is the on-chain per-agent aggregate (§7.13), sourced from `MechBalanceAdjusted` events indexed by requester. It counts on-chain and off-chain requests uniformly because the mech-side settlement path for off-chain (`deliverMarketplaceWithSignatures`) still triggers `MechBalanceAdjusted` credits at batch-delivery time. No fuzzy `questionTitle` matching, no hardcoded fee assumption, no per-request market attribution needed — the public ROI number stays on-chain-sourced end-to-end.
+Under off-chain: **no change needed.** `MechBalanceAdjusted` fires on every credit to a mech's `BalanceTracker` balance, and `Withdraw` fires on every mech withdrawal — both on-chain, both indexed by `new-mech-fees` already. Off-chain requests hit the same events during batched settlement via `deliverMarketplaceWithSignatures`, so both totals include off-chain naturally. This flow is already on-chain-safe under David's rule.
 
-The Marketplace Turnover and Claimed / Unclaimed metrics on the Mech page continue to come from the `new-mech-fees` subgraph exactly as today (`Global.totalFeesInUSD`, `Global.totalFeesOutUSD`, per-mech variants). Those are already on-chain-sourced and cover both request paths through the same `MechBalanceAdjusted` / `Withdraw` events; no change needed.
+#### 1b. Predict-page aggregate ROI (`pages/api/predict-metrics.js`)
 
-ROI distribution chart (new): `fetch(WILDCARD_API + '/v1/metrics/ai-agent/omenstrat/instances')` returns an array of per-Safe entries. Client-side, plot `roi_omen` (or `roi_polymarket`) across instances to render the histogram.
+Today reads `Global.totalRequests` from the **mech subgraph** (distinct from `new-mech-fees`), plus a last-4-days list of requests with `parsedRequest.questionTitle`. Cost formula:
 
-The fuzzy title join is gone for internal per-request attribution (`per_request_scores`) because the ETL joins on `market_id` from `mech_requests.raw_content.extras.market_id` (request schema v2.0+ already carries it). But that join is used only for the internal-only settled/unjoined fields — it does NOT power the public ROI number.
+```
+mech_cost   = (totalRequests - openMarketRequests) * DEFAULT_MECH_FEE   # DEFAULT_MECH_FEE = 0.01 xDAI hardcoded
+total_costs = totalTraded + totalFees + mech_cost                       # from Predict subgraph
+partial_roi = (totalPayout - total_costs) / total_costs
+```
+
+Two breaks under off-chain:
+- The mech subgraph's `Global.totalRequests` only increments on the mech contract's on-chain `Request` event. Off-chain requests never fire that event, so `totalRequests` undercounts. Mech cost drops, ROI looks better than it is.
+- `parsedRequest.questionTitle` requires IPFS content published on-chain. Off-chain requests carry no such content, so no `parsedRequest` entity exists, so the open-market exclusion silently returns zero for those rows.
+
+After: `fetch(WILDCARD_API + '/v1/metrics/ai-agent/omenstrat')` returns per-agent-blueprint totals with `mech_fee_usd` sourced from `MechBalanceAdjusted` events per requester (public field, §7.13). No mech-subgraph read, no questionTitle match, no hardcoded fee. The public ROI number stays on-chain-sourced end-to-end.
+
+#### 1c. Per-instance ROI distribution histogram (`common-util/api/predict/roi-distribution.ts`)
+
+The big one. A ~700-line cron-maintained blob that renders histograms binned in 10% ROI buckets from −100% to 200% (plus `> 200%`), split omenstrat vs polystrat, for tabs "All" / 7d / 30d / 90d. Guardrails: `MIN_TRADES_FOR_ROI_DISPLAY = 10` (excludes low-activity agents so ROI tails don't distort), and `tradingCosts > 0` (excludes unclaimed-wins artefacts).
+
+**Sources today (five):**
+
+- `predictAgentsGraphClient` (Omen Predict subgraph) — daily profit stats + all-time `traderAgents` for omenstrat.
+- `polymarketAgentsGraphClient` (Polymarket Predict subgraph) — same for polystrat.
+- `MARKETPLACE_GRAPH_CLIENTS.gnosis` — mech requests with `parsedRequest.questionTitle` + `senders` (with `totalLegacyRequests` and `totalMarketplaceRequests`).
+- `MARKETPLACE_GRAPH_CLIENTS.polygon` — same, for polystrat.
+- QMR persistent blob — a cron-maintained state ("Question Mech Requests") that tracks pending open-market requests keyed by `questionTitle`. Deducts from the all-time count so cost only lands on an agent once the associated bet settles.
+
+**Formula (per agent, "All" tab):**
+
+```
+senderTotal   = sender.totalLegacyRequests + sender.totalMarketplaceRequests
+openRequests  = sum of QMR entries for this agent                      # unresolved open-market subset
+mechRequests  = max(0, senderTotal - openRequests)
+mechFees      = mechRequests * DEFAULT_MECH_FEE                        # hardcoded 0.01 xDAI
+tradingCosts  = totalTradedSettled + totalFeesSettled                  # Predict subgraph
+totalCosts    = tradingCosts + mechFees
+roi           = (payout - totalCosts) / totalCosts * 100               # bin into ROI_BINS
+```
+
+The 7d / 30d / 90d tabs walk `byDay` in the target window and sum daily entries, where each `byDay[date].agents[agentId].mechRequests` is set by flushing QMR entries onto the day a market settles (product intent: "all costs for a market land on its settlement day, not on the day the request was made").
+
+**What breaks under off-chain (and what doesn't):**
+
+- `sender.totalLegacyRequests` — **mostly OK.** The subgraph's `handleMarketplaceDeliveryWithSignatures` bumps this counter (`+= numDeliveries`), so off-chain requests do land here at batched-settlement time. There is a pre-existing double-count on the `senderTotal` line because on-chain requests bump BOTH `totalLegacyRequests` and `totalMarketplaceRequests`, but that bug is unrelated to the off-chain migration.
+- QMR (open-market subtraction) — off-chain requests never enter QMR because they have no `parsedRequest.questionTitle`. That means their cost never gets deducted from the all-time total during the "pending" window — they count as settled the moment they appear on chain (at batched settlement time). This actually **matches** DG's and David's pessimistic approach, accidentally correct.
+- `byDay` per-day attribution — this IS the real hole. Per-day `mechRequests` comes from the QMR-flush-onto-settlement-day mechanism. Off-chain rows never populate QMR, so their per-day contribution is always zero. The 7d / 30d / 90d tabs will therefore undercount mech cost for any off-chain-flipped agent within those windows.
+- `DEFAULT_MECH_FEE = 0.01` — a pre-existing approximation. Not path-specific.
+
+**After (ETL replaces the whole file):**
+
+```
+GET /v1/metrics/ai-agent/omenstrat/instances
+```
+
+Returns an array — one entry per omenstrat Safe — with `windows: { "7d" | "30d" | "all" }` each carrying `roi_omen`, `n_bets_omen`, `mech_fee_usd`, and the underlying trade components. Client-side, olas-website:
+
+1. Deletes `roi-distribution.ts` in its entirety (cron, blob, QMR normalization, TTL flush, byDay pruning, questionTitle fuzzy matcher, DEFAULT_MECH_FEE constant, sender-total double-count bug — all of it).
+2. For each entry, bins `roi_omen` for the selected window into `ROI_BINS` client-side and renders.
+3. Applies the same `MIN_TRADES_FOR_ROI_DISPLAY` guardrail against `n_bets_omen`, which is served on the same entry.
+
+Every field the histogram needs is on-chain-sourced by the ETL: `mech_fee_usd` from `MechBalanceAdjusted` per requester, `roi_omen` composed from Omen Predict subgraph trades and the same on-chain mech cost. No QMR, no questionTitle matching, no 90-day retention window logic, no hardcoded fee. Off-chain undercount in the 7d / 30d / 90d tabs disappears as a side effect.
+
+For polystrat the same shape applies with the Polymarket Predict subgraph and the polygon BalanceTracker events.
+
+For the ROI distribution chart's "All" tab, use the `all` window. For the 7d / 30d / 90d tabs, use the corresponding rolling window from the /instances response. If the 90d tab is a strict requirement, that window is not currently in the schema (only 7d / 30d / all) — add it before olas-website migrates, or scope down the chart's window options to what /instances serves.
+
+#### 1d. Per-tool accuracy KPI (`common-util/api/predict/tool-accuracy.ts`)
+
+Today: iterate mech deliveries in the window, hit IPFS for `p_yes` per delivery, hit Omen for resolved `currentAnswer`, fuzzy-match by `questionTitle`, compute mean directional accuracy in the browser. Cached 12h.
+
+After: single field on `/v1/metrics/ai-agent/{name}`, `agent_aggregates.tool_accuracy_omen` (§7.11). Sourced from `per_request_scores` in the ETL, joined via `market_id` from the request body. Since the `market_id` join for off-chain rows is Valory-side data, the accuracy number here inherits an "attribution-quality" caveat for off-chain deployments — but tool accuracy is a per-tool quality metric, so the pragmatic view is that dashboards can render it with a small footnote noting the source. This is a smaller trust boundary than powering ROI with off-chain-only fields.
+
+The fuzzy title join is gone for internal per-request attribution (`per_request_scores`) because the ETL joins on `market_id` from `mech_requests.raw_content.extras.market_id` (request schema v2.0+ already carries it). But that join powers only `per_request_scores` and the internal-only settled/unjoined fields — it does NOT power the public per-agent `mech_fee_usd` or the composite ROI.
 
 ### Consumer 2: townhall-kpis
 
