@@ -391,12 +391,16 @@ Two on-chain sources feed the public mech-cost fields, one for the chain aggrega
 
 **Per-chain aggregate (`chain_aggregates.total_mech_fees_usd`, §7.12).** Read from the autonolas-subgraph-studio's `new-mech-fees` subgraph, which already indexes the `BalanceTracker` events `MechBalanceAdjusted(mech indexed, deliveryRate, balance, rateDiff)` and `Withdraw(mech, requester, amount)` per-chain and per-mech at `Global.totalFeesInUSD` / `Global.totalFeesOutUSD` and `Mech.totalFeesInUSD` / `Mech.totalFeesOutUSD`. `MechBalanceAdjusted` fires once per settlement batch carrying the batch total, so sums (like `Global.totalFeesInUSD`) work correctly, but event counts do NOT equal request counts. Nothing in §7.12 depends on event counts, so this is fine for the chain aggregate.
 
-**Per-Safe attribution (`agent_aggregates.n_mech_requests` and `mech_fee_usd`, §7.13).** Read request and delivery counts from the marketplace subgraph's `sender` entity, which already indexes both request paths per requester Safe:
+**Per-Safe attribution (`agent_aggregates.n_mech_requests` and `mech_fee_usd`, §7.13).** Read request counts from the marketplace subgraph's `sender` entity, which already indexes both request paths per requester Safe on a single counter:
 
-- `sender.totalMarketplaceRequests` — bumped by `handleMarketplaceRequest` when `MarketplaceRequest(priorityMech indexed, requester indexed, numRequests, requestIds, requestDatas)` fires. This is the on-chain per-request submission path.
-- `sender.totalLegacyRequests` — bumped by `handleMarketplaceDeliveryWithSignatures` when `MarketplaceDeliveryWithSignatures(deliveryMech indexed, requester indexed, numDeliveries, requestIds)` fires. This is the off-chain batched-settlement path.
+- `sender.totalLegacyRequests` — bumped on **both** paths per `mech-marketplace.ts`. On the on-chain path, `handleMarketplaceRequest` does `sender.totalLegacyRequests += numRequests` when `MarketplaceRequest(priorityMech indexed, requester indexed, numRequests, requestIds, requestDatas)` fires. On the off-chain batched-settlement path, `handleMarketplaceDeliveryWithSignatures` does `sender.totalLegacyRequests += numDeliveries` when `MarketplaceDeliveryWithSignatures(deliveryMech indexed, requester indexed, numDeliveries, requestIds)` fires. Same counter for both paths, indexed by the requester Safe.
 
-Both paths are indexed by the requester Safe. Off-chain requests never touch the chain individually, but at batched settlement time the marketplace fires `MarketplaceDeliveryWithSignatures` on `deliverMarketplaceWithSignatures`, indexed by the requester Safe, carrying `numDeliveries`. The subgraph handler adds that to `totalLegacyRequests`. Same shape the current olas-website ROI histogram uses (§7.2 line 154), so this preserves the count path the histogram already ships.
+Do **not** add `sender.totalMarketplaceRequests` on top of that. `handleMarketplaceRequest` bumps both counters at once (a pre-existing double-count called out at §7.2 line 164), so summing them would over-count every on-chain request. `totalLegacyRequests` alone is the correct both-paths count.
+
+**Window deltas from a lifetime counter.** `sender.totalLegacyRequests` is cumulative, so per-window numbers come from a delta against a lower bound:
+
+- Steady-state rolling windows (7d / 30d): the ETL persists a per-Safe snapshot `(safe, counter_at_snapshot_ts)` at the leading edge of each window during the rollup job. Window delta = current counter at `T` minus snapshot at `T - window_size`. Snapshots live in `cursor_state` alongside the roll-up watermarks.
+- Backfill of history before ETL launch: block-height subgraph queries. The subgraph supports `sender(id: safe, block: {number: N}) { totalLegacyRequests }`, so the ETL asks for the counter at each historical window boundary and derives deltas. Steady-state rollup can use either mechanism; snapshots are cheaper because they avoid per-window block-height queries at every tick.
 
 What the ETL reads:
 
@@ -404,7 +408,7 @@ What the ETL reads:
 |-------|--------|-----|
 | `Global.totalFeesInUSD` (per chain) | `new-mech-fees` | `chain_aggregates.total_mech_fees_usd` (§7.12) |
 | `Mech.totalFeesInUSD` (per mech) | `new-mech-fees` | `mech_aggregates.mech_fee_usd_earned` |
-| `sender.totalMarketplaceRequests + sender.totalLegacyRequests` (per Safe) | marketplace subgraph | backs `agent_aggregates.n_mech_requests` (§7.13) |
+| `sender.totalLegacyRequests` (per Safe, delta over window) | marketplace subgraph | backs `agent_aggregates.n_mech_requests` (§7.13) |
 
 **Fees per Safe: `n_mech_requests × DEFAULT_MECH_FEE_USD`.** Fee sums per requester Safe are not exposed by either subgraph today, so the ETL approximates them by multiplying the request count by the per-request fee constant, matching what olas-website ships today (`mechFees = mechRequests * DEFAULT_MECH_FEE`, §7.2 line 154). Same accuracy as current, same behaviour under off-chain. This is intentional for the initial rollout and lives in the ETL as a single named constant so a single-line update captures a future flat-fee change.
 
@@ -500,8 +504,8 @@ CREATE TABLE agent_aggregates (
     window_start            TIMESTAMPTZ NOT NULL,
     window_end              TIMESTAMPTZ NOT NULL,
     -- All fields below are Olas-public and on-chain-sourced.
-    n_mech_requests         INTEGER     NOT NULL,       -- delta of sender.totalMarketplaceRequests + totalLegacyRequests over the window
-    mech_fee_usd            DOUBLE PRECISION,           -- sum of deliveryRate for those events, converted to USD
+    n_mech_requests         INTEGER     NOT NULL,       -- delta of marketplace subgraph's sender.totalLegacyRequests over the window (bumped on both request paths by numRequests / numDeliveries)
+    mech_fee_usd            DOUBLE PRECISION,           -- n_mech_requests * DEFAULT_MECH_FEE_USD (matches olas-website ROI histogram formula; approximation until dynamic per-request pricing lands)
     n_bets_omen             INTEGER,                    -- from Predict subgraph FPMM trades
     n_bets_polymarket       INTEGER,
     total_cost_omen_usd     DOUBLE PRECISION,           -- sum of totalTradedSettled + totalFeesSettled on Omen bets in window
@@ -517,7 +521,7 @@ CREATE TABLE agent_aggregates (
 );
 ```
 
-The `agent_name` column is the display label the Wildcard API uses to resolve human-readable service names. Populated from the same small static `agent_name → service_id` mapping the API uses at the routing layer. The set of Safes under each service is NOT static — it comes from an on-chain ServiceRegistry read at rollup time, so a newly-registered Pearl instance appears in `agent_aggregates` on the next rollup cycle without a config change.
+The `agent_name` column is the display label the Wildcard API uses to resolve human-readable agent-blueprint names. Populated from the same small static `agent_name → agent_id` mapping the API uses at the routing layer, where `agent_id` is an AgentRegistry entry (the blueprint identifier — e.g. "trader"), NOT a ServiceRegistry service_id. Pearl mints one `service_id` per user, so a single agent_id (e.g. trader) has thousands of registered `service_id` values each with its own single-multisig Safe. The `agent_id → [service_id, ...] → each service's multisig` enumeration is dynamic — read from the on-chain ServiceRegistry at rollup time — so newly-registered Pearl instances appear in `agent_aggregates` on the next rollup cycle without a config change.
 
 Every field is Olas-public and ultimately sources from on-chain data: marketplace subgraph per-Safe request counters (mech spend approximation), `MechBalanceAdjusted` per-chain sums (chain-level fees), Predict subgraph FPMM trades (bets, cost, payout, ROI), on-chain FPMM resolutions (accuracy). Safe to render on olas-website and townhall-kpis.
 
@@ -887,12 +891,11 @@ USD conversion: today only USDC is used for prediction tools, so the conversion 
 Public Olas-facing fields for per-agent mech cost, sourced from the marketplace subgraph's per-Safe request counters and the marketplace's per-request fee constant.
 
 ```
-n_mech_requests   = sender.totalMarketplaceRequests + sender.totalLegacyRequests
-                    (delta over the window; per Safe)
+n_mech_requests   = delta of sender.totalLegacyRequests over the window (per Safe)
 mech_fee_usd      = n_mech_requests * DEFAULT_MECH_FEE_USD
 ```
 
-Sourcing details in §4.6. Both marketplace events are indexed by requester and cover both request paths: `MarketplaceRequest` for the on-chain path (bumps `totalMarketplaceRequests` via `handleMarketplaceRequest`), and `MarketplaceDeliveryWithSignatures` for the off-chain batched-settlement path (bumps `totalLegacyRequests` via `handleMarketplaceDeliveryWithSignatures`). No `mech_requests` data lake read is involved, no fuzzy `questionTitle` match, no per-market state.
+Sourcing details in §4.6. `sender.totalLegacyRequests` is the both-paths counter: `handleMarketplaceRequest` bumps it by `numRequests` on the on-chain path, `handleMarketplaceDeliveryWithSignatures` bumps it by `numDeliveries` on the off-chain batched-settlement path. Both marketplace events are indexed by the requester Safe. Do not add `sender.totalMarketplaceRequests` on top — that counter is also incremented on the on-chain path (a known pre-existing double-count called out at §7.2 line 164), so the sum would over-count on-chain requests. No `mech_requests` data lake read is involved, no fuzzy `questionTitle` match, no per-market state.
 
 **On the fee approximation.** `mech_fee_usd = n_mech_requests * DEFAULT_MECH_FEE_USD` matches the formula olas-website's ROI histogram ships today (§7.2 line 154), so this preserves current accuracy on both request paths. The approximation stops holding when the marketplace moves to dynamic per-request pricing, at which point the ETL needs an exact per-Safe fee sum via `RequesterBalanceAdjusted` — see §4.6 for the two paths that are on the table for that follow-up. The constant lives in the ETL as `DEFAULT_MECH_FEE_USD` (single named source) so the transition can start with a one-line update to a per-mech / per-config lookup.
 
@@ -955,7 +958,7 @@ An array, one entry per agent instance (Safe) of that service, so consumers can 
 
 Consumers rendering the ROI distribution chart on olas-website plot `roi_omen` (or `roi_polymarket`) directly, one dot per Safe, into ROI bins client-side. Consumers rendering a rewards-inclusive final ROI recompose it per Safe from `total_cost_*_usd`, `total_payout_*_usd`, `mech_fee_usd`, plus their own staking-subgraph and OLAS/USD price reads (§7.10).
 
-**Instance enumeration is dynamic.** The route resolves `ai_agent_name → service_id` from the static naming mapping and enumerates the current Safes for that service from the on-chain ServiceRegistry contract, so newly-registered Pearl agents appear in the array on the next request without an ETL config change. Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the passed Safe currently belongs to the named service by looking it up in the ServiceRegistry against the resolved `service_id`; a `safe_address` that does not currently belong to `{ai_agent_name}`'s service returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path, even if the Safe was previously registered under a different service. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
+**Instance enumeration is dynamic.** The route resolves `ai_agent_name → agent_id` from the static naming mapping (where `agent_id` is the AgentRegistry blueprint entry — Pearl mints one `service_id` per user, so an agent blueprint like `trader` has thousands of registered service_ids each with a single multisig, not one service_id with a fleet). It then enumerates the current registered services against that `agent_id` from the on-chain ServiceRegistry contract and collects each service's canonical multisig. Newly-registered Pearl agents appear in the array on the next request without an ETL config change. Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the Safe belongs to a currently-registered service under the same `agent_id` by looking it up in the ServiceRegistry; a `safe_address` that does not currently belong to any service under `{ai_agent_name}`'s `agent_id` returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path, even if the Safe was previously registered under a different agent. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
 Trader does not consume `/instances` at all — its ROI calculation reads on-chain `BalanceTracker.Deposit` events directly for off-chain pre-deposit cost and keeps its existing on-chain path unchanged. See Consumer 4 (§3) for the full rationale.
 
@@ -1147,8 +1150,8 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 - [ ] FPMM trades ingest job
 - [ ] APScheduler wire-up
 - [ ] FastAPI app + `/v1/metrics/ai-agent/{ai_agent_name}`, `/v1/metrics/tool/{tool_name}`, `/v1/metrics/ai-agent/{ai_agent_name}/instances` endpoints
-- [ ] Static `agent_name → service_id` mapping in the ETL repo (naming layer only)
-- [ ] `service_id → [safe_address, ...]` enumeration via on-chain ServiceRegistry read at rollup time
+- [ ] Static `agent_name → agent_id` mapping in the ETL repo (naming layer only, blueprint identifiers not per-user service_ids)
+- [ ] `agent_id → [service_id, ...] → each service's multisig` enumeration via on-chain ServiceRegistry read at rollup time
 - [ ] Dockerfile + deployment manifests (scheduler container + API container)
 - [ ] Observability: Prometheus metrics, lag alert, parse failure rate
 - [ ] Backfill mode runbook
@@ -1170,7 +1173,7 @@ Backfill is single-threaded. Expected duration: 10-20 hours for a 10M-row datase
 Small list. All non-blocking for starting code.
 
 1. Metrics Postgres infrastructure home. Same cluster as predict-api with a separate instance, or different cluster? Recommendation: same cluster, separate instance, separate backup policy.
-2. `agent_name → agent_address` mapping ownership. **Resolved.** The `agent_name → service_id` mapping (a small static file in the ETL repo) stays static because it's the human-readable display layer, but the `service_id → [safe_address, ...]` step is dynamic — read from the on-chain ServiceRegistry at rollup time. Newly-registered Pearl instances appear automatically without a config change and the `/instances` route can't accidentally leak cross-service data because the Safe-to-service check runs against the same registry.
+2. `agent_name → agent_address` mapping ownership. **Resolved.** The `agent_name → agent_id` mapping (a small static file in the ETL repo) stays static because it's the human-readable blueprint layer, but the `agent_id → [service_id, ...] → each service's multisig` step is dynamic — read from the on-chain ServiceRegistry at rollup time. Pearl mints one service_id per user, so one blueprint (e.g. `trader`) resolves to thousands of service_ids each with a single Safe, not a single service_id with a fleet. Newly-registered Pearl instances appear automatically without a config change and the `/instances` route can't accidentally leak cross-blueprint data because the Safe-to-blueprint check runs against the same registry.
 3. Window definitions. Default 7d / 30d / all. Add 24h for ops visibility?
 4. FPMM trades subgraph endpoints and rate limits across Omen + Polymarket. Need to confirm we are within the public-tier quotas at our query rate.
 5. Onchain request data — where does it enter the pipeline? **Resolved: Option B.** The mech writes onchain requests to the predict-api Postgres alongside offchain ones, so the data lake is the unified source for both request paths' bodies and the ETL never reads the marketplace subgraph for request bodies. This is what makes the market-resolution join in `per_request_scores` path-agnostic. **Note the scope:** the data lake is the source only for `per_request_scores` (tool-quality metrics). It is NOT the source for the public `n_mech_requests` / `mech_fee_usd` — those come from the marketplace subgraph's per-Safe request counters (§4.6) to preserve the on-chain-source rule.
