@@ -158,7 +158,7 @@ CREATE TABLE agent_aggregates (
     window_start                TIMESTAMPTZ      NOT NULL,
     window_end                  TIMESTAMPTZ      NOT NULL,
     -- All fields below are Olas-public and on-chain-sourced.
-    n_mech_requests             INTEGER          NOT NULL,    -- from MechBalanceAdjusted events per requester
+    n_mech_requests             INTEGER          NOT NULL,    -- delta of marketplace subgraph's sender.totalMarketplaceRequests + totalLegacyRequests over the window
     mech_fee_usd                DOUBLE PRECISION,             -- sum of deliveryRate for those events, USD
     n_bets_omen                 INTEGER,                      -- from Predict subgraph FPMM trades
     n_bets_polymarket           INTEGER,
@@ -180,7 +180,7 @@ CREATE INDEX aa_day_idx
 
 All fields on `agent_aggregates` are Olas-public and on-chain-sourced.
 
-`n_mech_requests` and `mech_fee_usd` come from the on-chain `MechBalanceAdjusted` event stream filtered by `requester = agent_address` (see spec §4.6, §7.13). Sourced from the `new-mech-fees` subgraph (extended per-requester) or RPC `eth_getLogs` on the `BalanceTracker` contracts. Covers on-chain and off-chain requests uniformly because `MechBalanceAdjusted` fires on every mech-balance credit, including credits emitted during batched off-chain settlement. Never sourced from the `mech_requests` data lake.
+`n_mech_requests` comes from the marketplace subgraph's `sender` entity, summing `sender.totalMarketplaceRequests` (bumped by `handleMarketplaceRequest` on the on-chain per-request path) and `sender.totalLegacyRequests` (bumped by `handleMarketplaceDeliveryWithSignatures` on the off-chain batched-settlement path). Both marketplace events are indexed by the requester Safe, so per-Safe counts land correctly under both request paths. `mech_fee_usd` is derived as `n_mech_requests × DEFAULT_MECH_FEE_USD` — the same formula olas-website's ROI histogram ships today (spec §7.2 line 154). Exact per-Safe fee sums will need `RequesterBalanceAdjusted` from the BalanceTracker when the marketplace transitions to dynamic per-request pricing; see spec §4.6 for the follow-up paths. Never sourced from the `mech_requests` data lake.
 
 A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*` and `tool_accuracy_*` columns are NULL.
 
@@ -215,7 +215,7 @@ SELECT window_end::date AS day,
  ORDER BY window_end ASC;
 ```
 
-`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries only the `agent_aggregates` fields for that Safe (windows, mech-request counts and fees including the settled and unjoined variants, ROI per platform, tool accuracy per platform, plus the per-day snapshots the agent-level endpoint exposes). The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route maps `ai_agent_name → [agent_address, ...]` from the same static mapping the agent-level route uses, and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address.
+`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries the `agent_aggregates` fields for that Safe: `n_mech_requests`, `mech_fee_usd`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`, `n_bets_omen`, `n_bets_polymarket`, per rolling window (7d / 30d / all), plus the per-day snapshots of `roi_omen` / `roi_polymarket` / `tool_accuracy_omen` / `tool_accuracy_polymarket`. The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route maps `ai_agent_name → [agent_address, ...]` from the same static mapping the agent-level route uses, and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address.
 
 An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the name-to-addresses fan-out. The route validates that the passed Safe belongs to the named agent by checking the same static mapping; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty response body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
