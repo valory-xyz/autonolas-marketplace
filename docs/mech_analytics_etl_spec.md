@@ -115,7 +115,7 @@ Four independent flows here. Each is worth walking on its own because the curren
 
 Reads `Global.totalFeesInUSD` and `Global.totalFeesOutUSD` from the `new-mech-fees` subgraph, aggregated across gnosis, base, and legacy. Rendered as one turnover number plus a payment-flow visualization (Claimed = totalFeesOut, Unclaimed = totalFeesIn − totalFeesOut).
 
-Under off-chain: **no change needed.** `MechBalanceAdjusted` fires on every credit to a mech's `BalanceTracker` balance, and `Withdraw` fires on every mech withdrawal — both on-chain, both indexed by `new-mech-fees` already. Off-chain requests hit the same events during batched settlement via `deliverMarketplaceWithSignatures`, so both totals include off-chain naturally. This flow is already on-chain-safe under David's rule.
+Under off-chain: **no change needed.** `MechBalanceAdjusted` fires on every credit to a mech's `BalanceTracker` balance, and `Withdraw` fires on every mech withdrawal — both on-chain, both indexed by `new-mech-fees` already. Off-chain requests hit the same events during batched settlement via `deliverMarketplaceWithSignatures`, so both totals include off-chain naturally. This flow already respects the on-chain-source rule.
 
 #### 1b. Predict-page aggregate ROI (`pages/api/predict-metrics.js`)
 
@@ -162,7 +162,7 @@ The 7d / 30d / 90d tabs walk `byDay` in the target window and sum daily entries,
 **What breaks under off-chain (and what doesn't):**
 
 - `sender.totalLegacyRequests` — **mostly OK.** The subgraph's `handleMarketplaceDeliveryWithSignatures` bumps this counter (`+= numDeliveries`), so off-chain requests do land here at batched-settlement time. There is a pre-existing double-count on the `senderTotal` line because on-chain requests bump BOTH `totalLegacyRequests` and `totalMarketplaceRequests`, but that bug is unrelated to the off-chain migration.
-- QMR (open-market subtraction) — off-chain requests never enter QMR because they have no `parsedRequest.questionTitle`. That means their cost never gets deducted from the all-time total during the "pending" window — they count as settled the moment they appear on chain (at batched settlement time). This actually **matches** DG's and David's pessimistic approach, accidentally correct.
+- QMR (open-market subtraction) — off-chain requests never enter QMR because they have no `parsedRequest.questionTitle`. That means their cost never gets deducted from the all-time total during the "pending" window — they count as settled the moment they appear on chain (at batched settlement time). This actually **matches** the pre-deposit-as-loss approach that was chosen for off-chain accounting, accidentally correct.
 - `byDay` per-day attribution — this IS the real hole. Per-day `mechRequests` comes from the QMR-flush-onto-settlement-day mechanism. Off-chain rows never populate QMR, so their per-day contribution is always zero. The 7d / 30d / 90d tabs will therefore undercount mech cost for any off-chain-flipped agent within those windows.
 - `DEFAULT_MECH_FEE = 0.01` — a pre-existing approximation. Not path-specific.
 
@@ -190,7 +190,7 @@ Today: iterate mech deliveries in the window, hit IPFS for `p_yes` per delivery,
 
 After: single field on `/v1/metrics/ai-agent/{name}`, `agent_aggregates.tool_accuracy_omen` (§7.11). Sourced from `per_request_scores` in the ETL, joined via `market_id` from the request body. Since the `market_id` join for off-chain rows is Valory-side data, the accuracy number here inherits an "attribution-quality" caveat for off-chain deployments — but tool accuracy is a per-tool quality metric, so the pragmatic view is that dashboards can render it with a small footnote noting the source. This is a smaller trust boundary than powering ROI with off-chain-only fields.
 
-The fuzzy title join is gone for internal per-request attribution (`per_request_scores`) because the ETL joins on `market_id` from `mech_requests.raw_content.extras.market_id` (request schema v2.0+ already carries it). But that join powers only `per_request_scores` and the internal-only settled/unjoined fields — it does NOT power the public per-agent `mech_fee_usd` or the composite ROI.
+The fuzzy title join is gone for internal per-request attribution (`per_request_scores`) because the ETL joins on `market_id` from `mech_requests.raw_content.extras.market_id` (request schema v2.0+ already carries it). But that join powers only `per_request_scores` (used for tool-quality metrics) — it does NOT power the public per-agent `mech_fee_usd` or the composite ROI.
 
 ### Consumer 2: townhall-kpis
 
@@ -219,7 +219,7 @@ Two paths.
 
 ### Consumer 4: trader agent (own performance summary)
 
-Trader renders `partial_roi` and `final_roi` in its own operator UI (via `agent_performance_summary_abci.behaviours.calculate_roi`, `behaviours.py:360-500`). **Trader does not consume the ETL at all.** The pre-deposit-as-loss rule (DG's proposal, confirmed by David) means every piece of information trader needs is on-chain-observable directly, with no ETL dependency and no `mech_requests` data lake read.
+Trader renders `partial_roi` and `final_roi` in its own operator UI (via `agent_performance_summary_abci.behaviours.calculate_roi`, `behaviours.py:360-500`). **Trader does not consume the ETL at all.** The pre-deposit-as-loss decision — treating money as spent the moment it leaves the Safe into the `BalanceTracker` — means every piece of information trader needs is on-chain-observable directly, with no ETL dependency and no `mech_requests` data lake read.
 
 **Today (subgraph + IPFS + hardcoded fee):**
 
@@ -275,7 +275,7 @@ Off-chain trader that has pre-deposited 3 times ($1, $2, $2), used only 200 of ~
 - `onchain_mech_cost = $0`
 - `offchain_prepaid_sum = $1 + $2 + $2 = $5`
 - `total_costs = totalTradedSettled + totalFeesSettled + $0 + $5`
-- Money truly committed ($5), reflected as loss immediately per DG's rule. If the trader wants a smoother ROI curve, reduce `offchain_deposit_target_calls` in `mech_marketplace_config` so top-ups are smaller and more frequent.
+- Money truly committed ($5), reflected as loss immediately per the pre-deposit-as-loss rule. If the trader wants a smoother ROI curve, reduce `offchain_deposit_target_calls` in `mech_marketplace_config` so top-ups are smaller and more frequent.
 
 Mixed history:
 - Both terms add cleanly. Formula makes no branch on `use_offchain`.
@@ -295,9 +295,9 @@ Where `withdrawals` is USDC leaving the Safe to an EOA or another Safe (not to a
 - **On-chain mech request:** the delivery_rate leaves the Safe at request time. `total_safe_value` drops. `total_portfolio_value` drops. `partial_roi` reflects the spend immediately.
 - **Off-chain mech request (pre-deposit path):** the pre-deposit amount leaves the Safe into the `BalanceTracker` contract. `_is_not_other_contract_optimism` returns False for contract addresses, so the outflow is NOT counted as a withdrawal (i.e. not added back to the numerator). `total_safe_value` drops. `total_portfolio_value` drops. `partial_roi` reflects the spend immediately.
 
-Both paths book the mech cost as loss the moment the money leaves the Safe. The unspent portion of the pre-deposit sitting in `mapRequesterBalances[safe]` is never re-credited, matching David's "you cannot withdraw those balances" observation.
+Both paths book the mech cost as loss the moment the money leaves the Safe. The unspent portion of the pre-deposit sitting in `mapRequesterBalances[safe]` is never re-credited (the tracker has no requester-withdraw path), so treating the whole deposit as spent immediately is honest accounting rather than a pessimistic approximation.
 
-**What optimus consumes from the ETL:** nothing for its own portfolio ROI. Optimus is a non-Predict agent, so it never populates the `_settled` or `_unjoined` fields, and it does not need per-tool quality metrics for its operator UI. If a future dashboard wants to display optimus's mech spend on olas-website, that dashboard reads the on-chain-sourced `n_mech_requests` / `mech_fee_usd` from `agent_aggregates` (public fields, David's rule intact).
+**What optimus consumes from the ETL:** nothing for its own portfolio ROI. Optimus is a non-Predict agent, so it does not need per-tool quality metrics for its operator UI. If a future dashboard wants to display optimus's mech spend on olas-website, that dashboard reads the on-chain-sourced `n_mech_requests` / `mech_fee_usd` from `agent_aggregates`.
 
 **Result: no code change in optimus for the off-chain migration's ROI accounting.** The portfolio-based formula is already correct for both paths. The only thing optimus needs is the existing `MechInteractEvent.ROUND_TIMEOUT` override wiring from the mech-interact v0.32.4 bump PR — unrelated to this spec.
 
@@ -400,7 +400,7 @@ The per-requester view (the third row) is not exposed by the current new-mech-fe
 - **Preferred: extend new-mech-fees with a `Requester` entity** that mirrors the existing `Mech` entity (`totalFeesInUSD` per requester, updated in each `MechBalanceAdjusted` handler using `event.params.requester`). Ships as a small subgraph PR alongside this ETL work. Once shipped, the ETL just queries `Requester(id: safe_address).totalFeesInUSD`.
 - **Fallback: RPC `eth_getLogs` per BalanceTracker contract**, filter by `requester` topic, sum `deliveryRate`. Runs in the ETL's roll-up job. Slower than a subgraph query, but self-contained if the subgraph extension is not ready.
 
-Both options source from the same on-chain events, so David's rule holds either way. The choice is speed vs. subgraph-extension latency. Open questions §15 captures the pick.
+Both options source from the same on-chain events, so the on-chain-source rule holds either way. The choice is speed vs. subgraph-extension latency. Open questions §15 captures the pick.
 
 **Off-chain requests are covered by the same event stream.** When the mech batches off-chain settlement via `deliverMarketplaceWithSignatures`, the `BalanceTracker` credits each delivered request's fee to the mech balance individually, emitting one `MechBalanceAdjusted` per delivered request. Same handler, same event, same USD conversion — the request's original path is not visible in the event and does not need to be.
 
@@ -493,20 +493,14 @@ CREATE TABLE agent_aggregates (
     window_kind             TEXT        NOT NULL,
     window_start            TIMESTAMPTZ NOT NULL,
     window_end              TIMESTAMPTZ NOT NULL,
-    -- Public (on-chain source: MechBalanceAdjusted events per requester)
+    -- All fields below are Olas-public and on-chain-sourced.
     n_mech_requests         INTEGER     NOT NULL,       -- count of on-chain MechBalanceAdjusted events for this requester
     mech_fee_usd            DOUBLE PRECISION,           -- sum of deliveryRate for those events, converted to USD
-    -- Internal-only (require mech_requests body join for market_id; mech-predict analytics only, see §7.13)
-    n_mech_requests_settled INTEGER,                    -- subset of n_mech_requests whose joined market has resolved
-    mech_fee_usd_settled    DOUBLE PRECISION,           -- fees for that settled subset
-    n_mech_requests_unjoined INTEGER,                   -- subset with no market_id join (residual, informational)
-    -- Public (on-chain source: FPMM trades from Predict subgraph + resolutions)
-    n_bets_omen             INTEGER,
+    n_bets_omen             INTEGER,                    -- from Predict subgraph FPMM trades
     n_bets_polymarket       INTEGER,
     roi_omen                DOUBLE PRECISION,           -- (payout - cost) / cost, trading only
     roi_polymarket          DOUBLE PRECISION,
-    -- Public (per_request_scores → on-chain resolution + on-chain FPMM subgraph)
-    tool_accuracy_omen      DOUBLE PRECISION,           -- mean directional accuracy on Omen
+    tool_accuracy_omen      DOUBLE PRECISION,           -- mean directional accuracy on Omen (from per_request_scores)
     tool_accuracy_polymarket DOUBLE PRECISION,
     computed_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (agent_address, window_kind, window_end)
@@ -515,12 +509,11 @@ CREATE TABLE agent_aggregates (
 
 The `agent_name` column is what the Wildcard API uses to resolve human-readable agent names. Populated from a small static mapping (Safe address to agent name) maintained in the ETL repo.
 
-**Field audience:**
+Every field is Olas-public and ultimately sources from on-chain data: `MechBalanceAdjusted` events (mech fees), Predict subgraph FPMM trades (bets and ROI), on-chain FPMM resolutions (accuracy). Safe to render on olas-website and townhall-kpis.
 
-- **Public** — `n_mech_requests`, `mech_fee_usd`, `n_bets_*`, `roi_*`, `tool_accuracy_*`. Every one of these ultimately sources from on-chain data: `MechBalanceAdjusted` events (mech fees), Predict subgraph FPMM trades (bets and ROI), on-chain FPMM resolutions (accuracy). Safe to render on olas-website and townhall-kpis.
-- **Internal-only** — `n_mech_requests_settled`, `mech_fee_usd_settled`, `n_mech_requests_unjoined`. These require joining the on-chain event stream to the mech request body in the `mech_requests` data lake (for `market_id`). For off-chain requests the body is Valory-side, so per David's rule these fields must not be composed into any Olas-public metric. Only mech-predict is expected to read them (via the internal analytics path), and even mech-predict's daily report typically reads `per_request_scores` directly. Trader (Consumer 4) does not consume these fields — it uses on-chain `BalanceTracker.Deposit` events for its off-chain cost accounting.
+`n_mech_requests` and `mech_fee_usd` cover **every** delivery the mech marketplace credits to this requester across the window (any tool, any request path, any deployment mode). A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its `roi_*` and `tool_accuracy_*` columns are NULL.
 
-`n_mech_requests` and `mech_fee_usd` cover **every** delivery the mech marketplace credits to this requester across the window (any tool, any request path, any deployment mode). A requester that never makes prediction requests (e.g. optimus) still gets counts and fees; its `roi_*` and `tool_accuracy_*` columns are NULL. The `_settled` variants and the `_unjoined` residual are computed only when the corresponding `per_request_scores` row exists (i.e. Predict-shaped requests with a `market_id`); other requests are simply not counted in the settled variants.
+The rationale for not shipping a `_settled` / `_unjoined` split alongside these fields lives in §7.13.
 
 ### 5.4 `mech_aggregates`
 
@@ -874,38 +867,20 @@ USD conversion: today only USDC is used for prediction tools, so the conversion 
 
 **What if the new-mech-fees subgraph does not yet index by requester.** For the per-chain aggregate this doesn't matter — chain-level sums are what the existing subgraph already exposes (`Global.totalFeesInUSD`). For the per-agent version (§7.13), the ETL either extends the subgraph with a per-`Requester` entity or falls back to reading `MechBalanceAdjusted` logs directly via RPC and aggregating on write. See "Open questions" §15 for the pick.
 
-### 7.13 Per-agent mech spend, and the settled/unjoined split
+### 7.13 Per-agent mech spend
 
-Two audiences here — the Olas-public aggregate spend (safe to render on olas-website or in townhall-kpis) and the internal-only settled/unjoined breakdown (only mech-predict analytics reads it). The audience distinction is what makes David's "metrics come from on-chain when they're on-chain" rule survive the off-chain flip.
-
-**Olas-public fields (on-chain source: `MechBalanceAdjusted` events indexed by requester):**
+Public Olas-facing fields for per-agent mech cost, sourced from on-chain `MechBalanceAdjusted` events indexed by requester.
 
 ```
 n_mech_requests   = count of MechBalanceAdjusted events with requester = agent_address in window
 mech_fee_usd      = sum of MechBalanceAdjusted.deliveryRate converted to USD, for the same subset
 ```
 
-Both are aggregated from the same on-chain event stream as §7.12, filtered by the `requester` topic. They cover on-chain and off-chain requests identically because `MechBalanceAdjusted` fires on every credit to a mech's `BalanceTracker` balance, including the credits emitted during batched off-chain settlement via `deliverMarketplaceWithSignatures`. No `mech_requests` data lake read is involved for the public fields.
+Both are aggregated from the same on-chain event stream as §7.12, filtered by the `requester` topic. They cover on-chain and off-chain requests identically because `MechBalanceAdjusted` fires on every credit to a mech's `BalanceTracker` balance, including the credits emitted during batched off-chain settlement via `deliverMarketplaceWithSignatures`. No `mech_requests` data lake read is involved.
 
 Consumers use these directly for the cost side of ROI (§7.10) and for the mech-cost column of the ROI distribution chart (§8 `/instances`).
 
-**Internal-only fields (require `mech_requests` data lake for the market join):**
-
-```
-n_mech_requests_settled  = subset of n_mech_requests whose joined market_id has resolved (per_request_scores.resolved_outcome IS NOT NULL)
-mech_fee_usd_settled     = sum of deliveryRate over that subset
-n_mech_requests_unjoined = subset with no market_id (parse failure, non-prediction tool, no extras.market_id on the request body)
-```
-
-Both variants require joining the on-chain event to the mech request body in the `mech_requests` data lake (via `request_id`) to obtain `market_id`. For off-chain requests the body was written by a private HTTPS POST from the agent to the mech, so the join input is Valory-side. Under David's rule these fields must NOT be composed into any Olas-public metric.
-
-Approved consumer: mech-predict analytics only. Even mech-predict's daily report typically reads `per_request_scores` directly via SQL — these pre-aggregated variants exist as a convenience for consumers that want them without a raw-row scan.
-
-Not approved consumers: olas-website, townhall-kpis, any other public surface. Trader was previously listed here but has since dropped its dependency on the ETL entirely (see Consumer 4 for the decision) — it reads on-chain `BalanceTracker.Deposit` events directly for off-chain cost accounting and preserves its existing on-chain path unchanged.
-
-**Why the split exists at all.** The `_settled` fields were originally designed to give trader a data-lake-backed replacement for its `parsedRequest.questionTitle` open-market matching. Trader's move to on-chain `Deposit` events removed that need, but the split may still be useful for future consumers that want a resolved-only view without dropping to raw `per_request_scores`. If no consumer wires up to these fields within a reasonable window, we should retire them.
-
-**Wording note.** `mech_fee_usd_settled` sums over the delivered ∩ settled subset since undelivered requests have no fee. `n_mech_requests_settled` counts requests including any that were not delivered — intentional so the count matches the "requests whose markets resolved" language.
+**No settled/unjoined split in the schema.** Earlier revisions proposed `n_mech_requests_settled` / `mech_fee_usd_settled` / `n_mech_requests_unjoined` variants that would defer per-agent cost until the associated market resolved (and expose an unjoined residual). Those variants required joining the on-chain mech-fee event to the mech request body in the `mech_requests` data lake for `market_id`, and for off-chain requests that body is Valory-side. With trader now reading on-chain `BalanceTracker.Deposit` events directly (Consumer 4) and no other consumer wired to the split, the variants were dropped. Add them back additively if a future consumer needs them (§8 extensibility rule).
 
 ---
 
@@ -924,8 +899,6 @@ One JSON containing the agent's mech-request counts and fees (totals and settled
   "as_of": "2026-06-24T10:00:00Z",
   "windows": {
     "7d":  { "n_mech_requests": 487, "mech_fee_usd": 23.40,
-             "n_mech_requests_settled": 412, "mech_fee_usd_settled": 19.80,
-             "n_mech_requests_unjoined": 3,
              "roi_omen": 0.12, "roi_polymarket": null,
              "tool_accuracy_omen": 0.62, "tool_accuracy_polymarket": null,
              "n_bets_omen": 142, "n_bets_polymarket": 0 },
@@ -959,22 +932,20 @@ One JSON for a single tool with quality metrics that don't depend on the request
 An array, one entry per agent instance (Safe) of that service, so consumers can bin into ROI distribution charts or other cross-instance views client-side. Each entry carries only the `agent_aggregates` fields for that Safe (not the tools or chain blocks that the agent-level response composes from `tool_aggregates` / `chain_aggregates` — those tables are not per-Safe). Concretely, each entry has:
 
 - `agent_address` (the Safe key) and `agent_name`
-- `windows`: `7d`, `30d`, `all` — each with:
-    - **Public (on-chain-sourced, safe for olas-website / townhall-kpis):** `n_mech_requests`, `mech_fee_usd` (from `MechBalanceAdjusted` per requester, §7.13), `n_bets_omen`, `n_bets_polymarket`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`.
-    - **Internal-only (require mech request body join, agent-side / mech-predict only, §7.13):** `n_mech_requests_settled`, `mech_fee_usd_settled`, `n_mech_requests_unjoined`.
+- `windows`: `7d`, `30d`, `all` — each with `n_mech_requests`, `mech_fee_usd`, `n_bets_omen`, `n_bets_polymarket`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`. All fields are Olas-public and on-chain-sourced (see §7.13, §7.10).
 - `daily`: the same per-day snapshot series the agent-level response exposes
 
-Consumers rendering the ROI distribution chart on olas-website read only the public fields for each Safe and compose `partial_roi` per instance client-side, or read `roi_omen` / `roi_polymarket` directly. No consumer of the public surface reads the internal fields.
+Consumers rendering the ROI distribution chart on olas-website plot `roi_omen` (or `roi_polymarket`) directly, one dot per Safe, into ROI bins client-side.
 
 Each entry is keyed by the instance's Safe address. An optional `safe_address` query param narrows the array to that single entry. The route validates that the passed Safe belongs to the named agent via the same static name-to-Safes mapping the agent-level route uses; a `safe_address` that does not map to `{ai_agent_name}` returns HTTP 404 (empty body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
-Trader does not consume `/instances` at all — its ROI calculation reads on-chain `BalanceTracker.Deposit` events directly for off-chain pre-deposit cost and keeps its existing on-chain path unchanged. See Consumer 4 (§3) for the full rationale. The internal-only fields (`n_mech_requests_settled`, `mech_fee_usd_settled`, `n_mech_requests_unjoined`) on `/instances` are therefore expected to be read only by mech-predict analytics, and even then typically via SQL against `per_request_scores` rather than the aggregate.
+Trader does not consume `/instances` at all — its ROI calculation reads on-chain `BalanceTracker.Deposit` events directly for off-chain pre-deposit cost and keeps its existing on-chain path unchanged. See Consumer 4 (§3) for the full rationale.
 
 ### Windows and freshness
 
 "Window" means rolling (7d = the last 7 days from now), not a calendar date. The daily snapshots are a separate per-day time series alongside the rolling values.
 
-Values are as fresh as the last ETL cycle plus the mech's write lag, and settled fields additionally lag by market resolution plus the late-resolution sweep. Agents consuming these endpoints should cache the last good response and tolerate staleness of at least one cycle interval.
+Values are as fresh as the last ETL cycle plus the mech's write lag. Fields tied to market resolution (`roi_*`, `tool_accuracy_*`) additionally lag by market resolution plus the late-resolution sweep. Agents consuming these endpoints should cache the last good response and tolerate staleness of at least one cycle interval.
 
 Extensibility rule: new fields are added as new keys; never remove or rename. Consumers ignore unknown keys.
 
@@ -1183,7 +1154,7 @@ Small list. All non-blocking for starting code.
 2. `agent_name → agent_address` mapping ownership. Static file in the ETL repo (recommended) vs a config table.
 3. Window definitions. Default 7d / 30d / all. Add 24h for ops visibility?
 4. FPMM trades subgraph endpoints and rate limits across Omen + Polymarket. Need to confirm we are within the public-tier quotas at our query rate.
-5. Onchain request data — where does it enter the pipeline? **Resolved: Option B.** The mech writes onchain requests to the predict-api Postgres alongside offchain ones, so the data lake is the unified source for both request paths' bodies and the ETL never reads the marketplace subgraph for request bodies. This is what makes the market-resolution join in `per_request_scores` path-agnostic. **Note the scope:** the data lake is the source for the internal-only settled/unjoined split (needs `market_id` from the body). It is NOT the source for the public `n_mech_requests` / `mech_fee_usd` — those come from on-chain `MechBalanceAdjusted` events per §4.6 to preserve David's "metrics come from on-chain when they're on-chain" rule.
+5. Onchain request data — where does it enter the pipeline? **Resolved: Option B.** The mech writes onchain requests to the predict-api Postgres alongside offchain ones, so the data lake is the unified source for both request paths' bodies and the ETL never reads the marketplace subgraph for request bodies. This is what makes the market-resolution join in `per_request_scores` path-agnostic. **Note the scope:** the data lake is the source only for `per_request_scores` (tool-quality metrics). It is NOT the source for the public `n_mech_requests` / `mech_fee_usd` — those come from on-chain `MechBalanceAdjusted` events per §4.6 to preserve the on-chain-source rule.
    - Option A (rejected): ETL pulls onchain requests from the marketplace subgraph periodically and normalizes them into the same shape. Kept the data lake offchain-only and left a permanent live subgraph dependency inside the ETL for the internal fields.
 6. Per-requester mech fees — subgraph extension or RPC? Two ways to source the public per-agent mech-spend fields (§4.6, §7.13). Recommendation: extend the `new-mech-fees` subgraph with a `Requester` entity mirroring the existing `Mech` entity. Ship as a small companion PR to autonolas-subgraph-studio ahead of ETL rollout. RPC fallback stays available if the subgraph extension slips.
 

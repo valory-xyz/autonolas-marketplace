@@ -157,16 +157,14 @@ CREATE TABLE agent_aggregates (
     window_kind                 TEXT             NOT NULL,    -- '7d' | '30d' | 'all' | 'day'
     window_start                TIMESTAMPTZ      NOT NULL,
     window_end                  TIMESTAMPTZ      NOT NULL,
-    n_mech_requests             INTEGER          NOT NULL,
-    mech_fee_usd                DOUBLE PRECISION,
-    n_mech_requests_settled     INTEGER,                      -- subset of n_mech_requests whose joined market has resolved
-    mech_fee_usd_settled        DOUBLE PRECISION,             -- fees for that settled subset
-    n_mech_requests_unjoined    INTEGER,                      -- subset with no market_id join (parse failure, non-prediction tool, no extras.market_id); excluded from _settled forever, exposed so consumers can see what settled costs omit
-    n_bets_omen                 INTEGER,
+    -- All fields below are Olas-public and on-chain-sourced.
+    n_mech_requests             INTEGER          NOT NULL,    -- from MechBalanceAdjusted events per requester
+    mech_fee_usd                DOUBLE PRECISION,             -- sum of deliveryRate for those events, USD
+    n_bets_omen                 INTEGER,                      -- from Predict subgraph FPMM trades
     n_bets_polymarket           INTEGER,
     roi_omen                    DOUBLE PRECISION,             -- (payout - cost) / cost, NULL if cost = 0
     roi_polymarket              DOUBLE PRECISION,
-    tool_accuracy_omen          DOUBLE PRECISION,             -- mean directional accuracy on Omen
+    tool_accuracy_omen          DOUBLE PRECISION,             -- mean directional accuracy on Omen (from per_request_scores)
     tool_accuracy_polymarket    DOUBLE PRECISION,
     computed_at                 TIMESTAMPTZ      NOT NULL DEFAULT now(),
     UNIQUE (agent_address, window_kind, window_end)
@@ -180,17 +178,15 @@ CREATE INDEX aa_day_idx
 
 ### Computation sources
 
-**Public fields (safe for olas-website / townhall-kpis / any Olas surface):**
+All fields on `agent_aggregates` are Olas-public and on-chain-sourced.
 
 `n_mech_requests` and `mech_fee_usd` come from the on-chain `MechBalanceAdjusted` event stream filtered by `requester = agent_address` (see spec §4.6, §7.13). Sourced from the `new-mech-fees` subgraph (extended per-requester) or RPC `eth_getLogs` on the `BalanceTracker` contracts. Covers on-chain and off-chain requests uniformly because `MechBalanceAdjusted` fires on every mech-balance credit, including credits emitted during batched off-chain settlement. Never sourced from the `mech_requests` data lake.
 
 A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*` and `tool_accuracy_*` columns are NULL.
 
-**Internal-only fields (mech-predict analytics only, must not be composed into any Olas-public metric):**
-
-`n_mech_requests_settled` / `mech_fee_usd_settled` require joining the on-chain event to the mech request body in the `mech_requests` data lake (for `market_id`), then joining that to the FPMM resolution in Omen/Polymarket. For off-chain requests the body is Valory-side, which is the reason these fields cannot power Olas-facing metrics under David's rule. `n_mech_requests_unjoined` is the residual count of requests where no `market_id` join is possible (parse failure, non-prediction tool, or no `extras.market_id` on the request body). Trader is deliberately NOT a consumer of these fields — it computes its cost side from on-chain `BalanceTracker.Deposit` events instead. Spec §7.13 has the details.
-
 ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
+
+Earlier revisions of this spec carried `n_mech_requests_settled` / `mech_fee_usd_settled` / `n_mech_requests_unjoined` variants intended for trader's own performance summary. Trader has since dropped its ETL dependency (spec Consumer 4), and no other consumer needs a resolved-only view, so the variants were removed. Add them back additively if a future consumer wants them.
 
 ### Which consumer queries hit it
 
@@ -199,8 +195,6 @@ ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM tra
 ```sql
 -- rolling windows for the headline numbers
 SELECT window_kind, n_mech_requests, mech_fee_usd,
-       n_mech_requests_settled, mech_fee_usd_settled,
-       n_mech_requests_unjoined,
        n_bets_omen, n_bets_polymarket,
        roi_omen, roi_polymarket,
        tool_accuracy_omen, tool_accuracy_polymarket
