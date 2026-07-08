@@ -14,7 +14,7 @@ If a column or grain disagrees between this doc and the spec, this doc wins (it 
 - All money amounts stored as `DOUBLE PRECISION` for analytics ergonomics. Source rows in the data lake (`mech_requests.delivery_rate`) stay integer-unit; conversion to USD happens at ETL write time.
 - Aggregate tables key on `(grain columns, window_kind, window_end)` and are upserted in place on every roll-up cycle.
 - The ETL is the only writer. The Wildcard API holds read-only credentials. olas-website, townhall-kpis, and mech-predict never touch the metrics Postgres directly — they go through the API.
-- `window_kind` enum: `'24h' | '7d' | '30d' | 'all' | 'day'`. Rolling windows (`24h`, `7d`, `30d`, `all`) carry their `window_end` as the current cycle time; the `'day'` rows are per-calendar-day snapshots keyed by `window_end = end-of-day UTC`.
+- `window_kind` enum: `'7d' | '30d' | 'all' | 'day'`. Rolling windows (`7d`, `30d`, `all`) carry their `window_end` as the current cycle time; the `'day'` rows are per-calendar-day snapshots keyed by `window_end = end-of-day UTC`. A `24h` rolling window is an open question (ETL spec §15) — if adopted it slots in as one more rolling `window_kind` value with no schema change.
 
 ---
 
@@ -24,9 +24,9 @@ If a column or grain disagrees between this doc and the spec, this doc wins (it 
 |-------|-------|-------------------------------|
 | [`per_request_scores`](#3-per_request_scores) | one row per delivered prediction | source for every aggregate; not consumer-facing |
 | [`tool_aggregates`](#4-tool_aggregates) | (tool, platform, window) | `GET /v1/metrics/tool/{tool_name}` |
-| [`agent_aggregates`](#5-agent_aggregates) | (agent, window) and (agent, day) | `GET /v1/metrics/agent-economy/{agent_name}`, `GET /v1/metrics/service/{service_name}` |
-| [`mech_aggregates`](#6-mech_aggregates) | (mech, window) | `GET /v1/metrics/agent-economy/{agent_name}` (mech context block) |
-| [`chain_aggregates`](#7-chain_aggregates) | (chain, window) | `GET /v1/metrics/agent-economy/{agent_name}` (chain block) |
+| [`agent_aggregates`](#5-agent_aggregates) | (agent, window) and (agent, day) | `GET /v1/metrics/ai-agent/{ai_agent_name}`, `GET /v1/metrics/ai-agent/{ai_agent_name}/instances` |
+| [`mech_aggregates`](#6-mech_aggregates) | (mech, window) | `GET /v1/metrics/ai-agent/{ai_agent_name}` (mech context block) |
+| [`chain_aggregates`](#7-chain_aggregates) | (chain, window, source) | `GET /v1/metrics/ai-agent/{ai_agent_name}` (chain block) |
 | [`cursor_state`](#8-cursor_state) | one row per ETL job | not consumer-facing; ETL bookmark |
 
 ---
@@ -103,7 +103,7 @@ CREATE TABLE tool_aggregates (
     id                    BIGSERIAL        PRIMARY KEY,
     tool                  TEXT             NOT NULL,
     platform              TEXT             NOT NULL,        -- 'omen' | 'polymarket' | 'all'
-    window_kind           TEXT             NOT NULL,        -- '24h' | '7d' | '30d' | 'all'
+    window_kind           TEXT             NOT NULL,        -- '7d' | '30d' | 'all'
     window_start          TIMESTAMPTZ      NOT NULL,
     window_end            TIMESTAMPTZ      NOT NULL,
     n_predictions         INTEGER          NOT NULL,
@@ -132,14 +132,14 @@ SELECT platform, window_kind, n_predictions, n_resolved,
        ece, bss, calibration_curve, no_signal_rate
   FROM tool_aggregates
  WHERE tool = $1
-   AND window_kind IN ('24h', '7d', '30d', 'all')
+   AND window_kind IN ('7d', '30d', 'all')
    AND window_end = (SELECT MAX(window_end) FROM tool_aggregates WHERE tool = $1)
  ORDER BY platform, window_kind;
 ```
 
 Each (tool, platform) gets one row per window. The endpoint pivots into a per-window JSON object.
 
-`GET /v1/metrics/agent-economy/{agent_name}` also reads this table, sliced to the tools that agent actually used in the window, for the "tools" block of the response. The slice uses `per_request_scores` to find which tools matter.
+`GET /v1/metrics/ai-agent/{ai_agent_name}` also reads this table, sliced to the tools that agent actually used in the window, for the "tools" block of the response. The slice uses `per_request_scores` to find which tools matter.
 
 ---
 
@@ -154,16 +154,21 @@ CREATE TABLE agent_aggregates (
     id                          BIGSERIAL        PRIMARY KEY,
     agent_address               TEXT             NOT NULL,    -- the Safe address
     agent_name                  TEXT,                         -- 'omenstrat' | 'polystrat' | 'optimus' | ...
-    window_kind                 TEXT             NOT NULL,    -- '24h' | '7d' | '30d' | 'all' | 'day'
+    window_kind                 TEXT             NOT NULL,    -- '7d' | '30d' | 'all' | 'day'
     window_start                TIMESTAMPTZ      NOT NULL,
     window_end                  TIMESTAMPTZ      NOT NULL,
-    n_mech_requests             INTEGER          NOT NULL,
-    mech_fee_usd                DOUBLE PRECISION,
-    n_bets_omen                 INTEGER,
+    -- All fields below are Olas-public and on-chain-sourced.
+    n_mech_requests             INTEGER          NOT NULL,    -- delta of marketplace subgraph's sender.totalLegacyRequests over the window (bumped on both request paths by numRequests / numDeliveries)
+    mech_fee_usd                DOUBLE PRECISION,             -- n_mech_requests * DEFAULT_MECH_FEE_USD (matches olas-website ROI histogram formula; approximation until dynamic per-request pricing lands)
+    n_bets_omen                 INTEGER,                      -- from Predict subgraph FPMM trades
     n_bets_polymarket           INTEGER,
-    roi_omen                    DOUBLE PRECISION,             -- (payout - cost) / cost, NULL if cost = 0
+    total_cost_omen_usd         DOUBLE PRECISION,             -- sum of totalTradedSettled + totalFeesSettled on Omen bets in window
+    total_payout_omen_usd       DOUBLE PRECISION,             -- sum of realized payout from resolved Omen bets in window
+    total_cost_polymarket_usd   DOUBLE PRECISION,             -- same components on Polymarket
+    total_payout_polymarket_usd DOUBLE PRECISION,
+    roi_omen                    DOUBLE PRECISION,             -- (total_payout_omen_usd - total_cost_omen_usd) / total_cost_omen_usd, NULL if cost = 0
     roi_polymarket              DOUBLE PRECISION,
-    tool_accuracy_omen          DOUBLE PRECISION,             -- mean directional accuracy on Omen
+    tool_accuracy_omen          DOUBLE PRECISION,             -- mean directional accuracy on Omen (from per_request_scores)
     tool_accuracy_polymarket    DOUBLE PRECISION,
     computed_at                 TIMESTAMPTZ      NOT NULL DEFAULT now(),
     UNIQUE (agent_address, window_kind, window_end)
@@ -175,19 +180,37 @@ CREATE INDEX aa_day_idx
     ON agent_aggregates (agent_address, window_end DESC) WHERE window_kind = 'day';
 ```
 
+### Computation sources
+
+All fields on `agent_aggregates` are Olas-public and on-chain-sourced.
+
+`n_mech_requests` comes from the marketplace subgraph's `sender` entity, specifically `sender.totalLegacyRequests` — the single counter that captures both request paths. `handleMarketplaceRequest` bumps it by `numRequests` on the on-chain path, `handleMarketplaceDeliveryWithSignatures` bumps it by `numDeliveries` on the off-chain batched-settlement path. Both marketplace events are indexed by the requester Safe. We deliberately do NOT add `sender.totalMarketplaceRequests` on top — that counter is also incremented on the on-chain path (pre-existing double-count called out in spec §7.2 line 164), so the sum would over-count on-chain requests. Window deltas come from either persisted per-Safe snapshots at rollup time (steady state) or block-height subgraph queries (backfill of history before ETL launch); see spec §4.6. `mech_fee_usd` is derived as `n_mech_requests × DEFAULT_MECH_FEE_USD` — the same formula olas-website's ROI histogram ships today (spec §7.2 line 154). Exact per-Safe fee sums will need `RequesterBalanceAdjusted` from the BalanceTracker when the marketplace transitions to dynamic per-request pricing; see spec §4.6 for the follow-up paths. Never sourced from the `mech_requests` data lake.
+
+A requester that never makes prediction requests (e.g. optimus) still gets counts and fees here; its `roi_*`, `total_cost_*_usd`, `total_payout_*_usd`, and `tool_accuracy_*` columns are NULL.
+
+**Trading cost and payout components.** `total_cost_omen_usd` sums `totalTradedSettled + totalFeesSettled` per bet on Omen inside the window, mirroring the trader-side formula in `_fetch_trader_agent`. `total_payout_omen_usd` sums the realized payout on resolved Omen bets in the same window. Both source from the Predict subgraph's FPMM trades entity, restricted to `resolved = true`. Same shape for the two Polymarket columns.
+
+**Why the components ship next to the ratio.** Consumers that display a rewards-inclusive ROI (olas-website's `finalRoi`, trader's in-agent `final_roi`) can't recompose it from `roi_omen` alone — staking rewards can't be added to a precomputed ratio's numerator after the fact. With `total_cost_*_usd`, `total_payout_*_usd`, and `mech_fee_usd` all present per platform per window, consumers can compose `partialRoi = (payout - cost) / cost` and `finalRoi = (payout + staking_rewards - cost - mech_fee) / (cost + mech_fee)` on their side using their own staking-subgraph and price feeds. The finished `roi_*` ratios stay in the schema for cheap direct reads by consumers that only need the trading-only view.
+
+ROI and tool-accuracy columns roll up from `per_request_scores` and the FPMM trades ingest, restricted to resolved markets.
+
+Earlier revisions of this spec carried `n_mech_requests_settled` / `mech_fee_usd_settled` / `n_mech_requests_unjoined` variants intended for trader's own performance summary. Trader has since dropped its ETL dependency (spec Consumer 4), and no other consumer needs a resolved-only view, so the variants were removed. Add them back additively if a future consumer wants them.
+
 ### Which consumer queries hit it
 
-`GET /v1/metrics/agent-economy/{agent_name}` resolves `agent_name → agent_address` from a static mapping, then issues two reads:
+`GET /v1/metrics/ai-agent/{ai_agent_name}` resolves `agent_name → agent_id` from a small static mapping in the ETL repo (this is the human-readable blueprint layer, where `agent_id` is the AgentRegistry entry — NOT a per-user service_id, since Pearl mints one service_id per user), then enumerates the current registered services against that `agent_id` by reading the on-chain ServiceRegistry contract and collects each service's canonical multisig (dynamic — every newly-registered Pearl instance appears automatically without an ETL config change). Then issues two reads per Safe:
 
 ```sql
 -- rolling windows for the headline numbers
 SELECT window_kind, n_mech_requests, mech_fee_usd,
        n_bets_omen, n_bets_polymarket,
+       total_cost_omen_usd, total_payout_omen_usd,
+       total_cost_polymarket_usd, total_payout_polymarket_usd,
        roi_omen, roi_polymarket,
        tool_accuracy_omen, tool_accuracy_polymarket
   FROM agent_aggregates
  WHERE agent_address = $1
-   AND window_kind IN ('24h', '7d', '30d', 'all')
+   AND window_kind IN ('7d', '30d', 'all')
    AND window_end = (SELECT MAX(window_end) FROM agent_aggregates
                      WHERE agent_address = $1 AND window_kind = '7d');
 
@@ -202,7 +225,9 @@ SELECT window_end::date AS day,
  ORDER BY window_end ASC;
 ```
 
-`GET /v1/metrics/service/{service_name}` returns an array of these objects, one per agent instance of the service. The route maps `service_name → [agent_address, ...]` and runs the same two queries per agent.
+`GET /v1/metrics/ai-agent/{ai_agent_name}/instances` returns an array, one entry per agent instance (Safe) of the service. Each entry carries the `agent_aggregates` fields for that Safe: `n_mech_requests`, `mech_fee_usd`, `total_cost_omen_usd`, `total_payout_omen_usd`, `total_cost_polymarket_usd`, `total_payout_polymarket_usd`, `roi_omen`, `roi_polymarket`, `tool_accuracy_omen`, `tool_accuracy_polymarket`, `n_bets_omen`, `n_bets_polymarket`, per rolling window (7d / 30d / all), plus the per-day snapshots of `roi_omen` / `roi_polymarket` / `tool_accuracy_omen` / `tool_accuracy_polymarket`. The per-tool metric breakdown and per-chain totals blocks that the agent-level endpoint composes from `tool_aggregates` / `chain_aggregates` are **not** included in instance entries — those tables are not per-Safe. The route resolves `ai_agent_name → agent_id` from the static naming mapping, enumerates the current registered services against that `agent_id` from the on-chain ServiceRegistry (see the agent-level route above; Pearl mints one service_id per user so this can return thousands of entries under a single blueprint), collects each service's canonical multisig, and runs the same two `agent_aggregates` reads per Safe. Each entry is keyed by the instance's Safe address. Newly-registered Pearl agents appear automatically on the next request without a config change.
+
+An optional `safe_address` query param narrows the array to that single entry — the same queries with `agent_address = $safe_address` directly, skipping the enumeration. The route validates that the Safe belongs to a currently-registered service under the resolved `agent_id` by looking it up in the ServiceRegistry; a `safe_address` that does not currently belong to any service under `{ai_agent_name}`'s `agent_id` returns HTTP 404 (empty response body). This prevents `…/ai-agent/trader/instances?safe_address=<an-optimus-safe>` from returning optimus data under the trader path, even if the Safe was previously registered under a different agent. This is how a running agent fetches its own numbers, once its config gives it both its agent name and its Safe address.
 
 ### Daily snapshot semantics
 
@@ -212,7 +237,7 @@ Daily snapshots are attributed by **prediction date** (i.e. the row's `requested
 
 ## 6. `mech_aggregates`
 
-Rolled up per (mech, window). Powers the mech-context block of the agent-economy response (so a consumer rendering "agent X's most-used mech earned $Y" doesn't need a second join).
+Rolled up per (mech, window). Powers the mech-context block of the ai-agent response (so a consumer rendering "agent X's most-used mech earned $Y" doesn't need a second join).
 
 ### DDL
 
@@ -233,7 +258,7 @@ CREATE TABLE mech_aggregates (
 
 ### Which consumer queries hit it
 
-`GET /v1/metrics/agent-economy/{agent_name}` reads it sliced to the mechs the requested agent actually used. The slice uses `per_request_scores.mech_address` filtered to the agent's `requester`.
+`GET /v1/metrics/ai-agent/{ai_agent_name}` reads it sliced to the mechs the requested agent actually used. The slice uses `per_request_scores.mech_address` filtered to the agent's `requester`.
 
 It is not its own endpoint today. If a "mech leaderboard" endpoint is added later, that's an additive change against this table and does not need a schema migration.
 
@@ -241,7 +266,7 @@ It is not its own endpoint today. If a "mech leaderboard" endpoint is added late
 
 ## 7. `chain_aggregates`
 
-Rolled up per (chain_id, window). One row per chain per window. Backs the chain block of the agent-economy response.
+Rolled up per (chain_id, window, source). Backs the chain block of the ai-agent response. `source` distinguishes the live ETL roll-up from the one-time legacy-subgraph snapshot that lands here at legacy decommission.
 
 ### DDL
 
@@ -249,22 +274,58 @@ Rolled up per (chain_id, window). One row per chain per window. Backs the chain 
 CREATE TABLE chain_aggregates (
     id                       BIGSERIAL        PRIMARY KEY,
     chain_id                 INTEGER          NOT NULL,
-    window_kind              TEXT             NOT NULL,
+    window_kind              TEXT             NOT NULL,    -- '7d' | '30d' | 'all'
     window_start             TIMESTAMPTZ      NOT NULL,
     window_end               TIMESTAMPTZ      NOT NULL,
+    source                   TEXT             NOT NULL,    -- 'etl_live' | 'legacy_snapshot'
     total_mech_fees_usd      DOUBLE PRECISION,
     total_requests           INTEGER,
     total_deliveries         INTEGER,
+    snapshot_input_hash      TEXT,                         -- non-NULL only when source='legacy_snapshot'; SHA-256 of the raw LegacyMechFeesQuery response captured at decommission
     computed_at              TIMESTAMPTZ      NOT NULL DEFAULT now(),
-    UNIQUE (chain_id, window_kind, window_end)
+    UNIQUE (chain_id, window_kind, window_end, source)
 );
 ```
 
+### Sources and merge semantics
+
+Two row sources coexist:
+
+- `source='etl_live'` — written by the `rollup_chain_aggregates` job on every interval from **on-chain `MechBalanceAdjusted` events indexed by the `new-mech-fees` subgraph** (or, if the subgraph is unavailable, direct RPC `eth_getLogs` on the `BalanceTracker` contracts). One row per (chain, window_kind, window_end). Constantly refreshed. Not sourced from the `mech_requests` data lake — the public per-chain fee totals must be on-chain-derived so they cover on-chain and off-chain requests uniformly (`MechBalanceAdjusted` fires on every mech-balance credit, including credits emitted during batched off-chain settlement via `deliverMarketplaceWithSignatures`).
+- `source='legacy_snapshot'` — written exactly once when the legacy autonolas-subgraph is decommissioned. Captures per-chain fee / request / delivery totals from the final `LegacyMechFeesQuery` run at decommission date `T`. Never updated thereafter. `snapshot_input_hash` holds the SHA-256 of the raw query response so the load can be audited.
+
+Snapshot rows are written for:
+- `window_kind='all'` — one row per chain, contributes to every `all`-window read forever.
+- Rolling `window_kind` values — a rolling window ending at `t` in `(T, T + window_size)` overlaps the legacy period only over `[t - window_size, T]`, so the snapshot row is valued as the legacy activity inside that overlap, never the full legacy total. To make that computable, the decommission capture includes a per-day legacy tail series for the trailing 30 days (the largest window) alongside the totals; the roll-up job re-values the rolling snapshot row each cycle as the sum of the tail days still inside the window, and stops writing the row once that sum is zero (at the latest at `T + window_size`). In practice all legacy mechs were already down before decommission, so the tail series is expected to be all zeros and no rolling snapshot rows get written at all — the valuation rule exists so a nonzero tail cannot over-count.
+
 ### Which consumer queries hit it
 
-`GET /v1/metrics/agent-economy/{agent_name}` returns a `chain` block keyed by chain name; the route maps `chain_id → name` (gnosis, base, polygon) and reads one row per chain per window.
+`GET /v1/metrics/ai-agent/{ai_agent_name}` returns a `chain` block keyed by chain name; the route maps `chain_id → name` (gnosis, base, polygon) and sums across `source` for the requested window:
 
-townhall-kpis' current `NewMechFeesQuery` + `LegacyMechFeesQuery` chain-fee aggregations are replaced by reads against this table via the API.
+```sql
+SELECT chain_id,
+       SUM(total_mech_fees_usd) AS total_mech_fees_usd,
+       SUM(total_requests)      AS total_requests,
+       SUM(total_deliveries)    AS total_deliveries
+  FROM chain_aggregates
+ WHERE window_kind = $1
+   AND (
+         window_end = (
+           SELECT MAX(window_end)
+             FROM chain_aggregates
+            WHERE window_kind = $1
+              AND source = 'etl_live'
+         )
+      OR (source = 'legacy_snapshot' AND window_kind = 'all')
+       )
+ GROUP BY chain_id;
+```
+
+Why the two-branch filter: live rows (and the rolling-window snapshot rows, which are written with the same `window_end` as their live sibling) come through the first branch. The `all`-window snapshot row is frozen at `window_end = T` (the decommission date) and never advances, so pinning it to the live max would silently drop legacy history from every `all`-window read once the live rows move past `T`; the second branch includes it unconditionally.
+
+Why `GROUP BY chain_id` without grouping on source: the consumer wants one merged number per chain per window. The `source` column exists for audit and for the snapshot freeze, not for consumer-visible split.
+
+townhall-kpis' current `NewMechFeesQuery` + `LegacyMechFeesQuery` chain-fee aggregations are replaced by reads against this table via the API. `LegacyMechFeesQuery` itself is not ported — its final result lives in the snapshot rows.
 
 ---
 
