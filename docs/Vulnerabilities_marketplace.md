@@ -21,7 +21,7 @@
 | 13 | Karma `int256` theoretical overflow | Karma | Informative |
 | 14 | `trackerBalance` not decremented on withdrawal | BalanceTrackerNvmSubscriptionNative | Informative |
 | 15 | `SubscriptionProvider.fulfill()` permissionless | SubscriptionProvider | Informative |
-| 16 | `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits | BalanceTrackerNvmSubscriptionNative | Low |
+| 16 | `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits | BalanceTrackerNvmSubscriptionNative | Medium |
 | 17 | Balance trackers remain fundable after all corresponding mech factories are disabled | BalanceTrackerBase, BalanceTrackerFixedPriceToken, BalanceTrackerFixedPriceNative | Informative |
 | 18 | Celo native tracker fee-drain depends on the wrapped-native token configuration | BalanceTrackerFixedPriceNativeCelo | Low |
 | 19 | Balance-tracker re-map strands residual requester balances | MechMarketplace, BalanceTrackerBase | Low |
@@ -320,7 +320,7 @@ not meet the NVM preconditions will simply revert.
 No change is recommended. The NVM framework's internal access control is sufficient.
 
 ### 16. `BalanceTrackerNvmSubscriptionNative.depositFor()` allows direct deposits
-**Severity**: Low
+**Severity**: Medium (raised from Low — see "Realisable impact" below)
 
 `BalanceTrackerNvmSubscriptionNative` inherits from `BalanceTrackerFixedPriceNative`, which exposes
 a payable `depositFor(address account)` that credits the account's balance:
@@ -345,10 +345,46 @@ function depositFor(address) external payable virtual override {
 This aligns `BalanceTrackerNvmSubscriptionNative` with `BalanceTrackerNvmSubscriptionToken`, which
 already reverts both `deposit()` and `depositFor()` on its token variant.
 
+**Realisable impact.** The severity of this entry was originally recorded as Low, describing the
+defect as bypassing the NFT subscription model. That understates it, because the wei written into
+`mapRequesterBalances` are not spent at face value. They are consumed as subscription **credits**, and
+`_processPayment` converts a mech's credit balance into native tokens before paying out:
+
+```solidity
+// Convert mech credits balance into tokens
+balance = (balance * tokenCreditRatio) / 1e18;
+mapMechBalances[mech] = balance;
+
+// Check current contract balance
+if (balance > trackerBalance) {
+    revert Overflow(balance, trackerBalance);
+}
+```
+
+`tokenCreditRatio` is the configured token-per-credit rate, so a deposit made through the unguarded
+`depositFor()` is scaled by `tokenCreditRatio / 1e18` on the way out. On the live Gnosis instance that
+ratio reads `9.9e29`, i.e. a factor of ~10^12. The `Overflow` check caps any single payout at the
+tracker's own native balance, so the defect cannot overdraw the contract — but within that cap a dust
+deposit converts into a payout of arbitrary size, up to everything the tracker holds.
+
+The practical exposure is therefore a function of tracker liquidity, not of the attacker's outlay, and
+it grows as subscription usage grows. That is a Medium rather than a Low, and it raises the priority of
+the redeployment below rather than changing the fix, which is already correct.
+
 **Deployment status:** the contract source has been updated, but the on-chain instances on
 Gnosis (`0x7D686bD1fD3CFF6E45a40165154D61043af7D67c`) and Base
-(`0x3d79737f05966c5925a04d1b04110006F5a072bE`) still run the pre-fix bytecode. They need to be
-redeployed before this vulnerability is closed on-chain.
+(`0x3d79737f05966c5925a04d1b04110006F5a072bE`) still run the pre-fix bytecode — re-confirmed by an
+`eth_call` to `depositFor()` carrying value against both, which returns successfully where the fixed
+source reverts `NoDepositAllowed`. (Checking the deployed bytecode for the `NoDepositAllowed` selector
+does **not** distinguish the two versions: `_getOrRestrictNativeValue()` uses the same error and is
+present pre-fix. The value-bearing call is the reliable test.) They need to be redeployed before this
+vulnerability is closed on-chain.
+
+**Redeployment note.** These trackers are deployed directly, not behind a proxy, so closing this means
+deploying a new instance and re-pointing the payment type with
+`MechMarketplace.setPaymentTypeBalanceTrackers`. That re-pointing is exactly the operation described in
+item 19: any request already in flight for the affected payment type was debited on the old tracker and
+would settle against the new one. In-flight requests should be settled or drained before the swap.
 
 ### 17. Balance trackers remain fundable after all corresponding mech factories are disabled
 **Severity**: Informative
