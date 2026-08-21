@@ -364,13 +364,33 @@ if (balance > trackerBalance) {
 
 `tokenCreditRatio` is the configured token-per-credit rate, so a deposit made through the unguarded
 `depositFor()` is scaled by `tokenCreditRatio / 1e18` on the way out. On the live Gnosis instance that
-ratio reads `9.9e29`, i.e. a factor of ~10^12. The `Overflow` check caps any single payout at the
-tracker's own native balance, so the defect cannot overdraw the contract — but within that cap a dust
-deposit converts into a payout of arbitrary size, up to everything the tracker holds.
+ratio reads `9.9e29`, i.e. a factor of ~10^12, so a dust deposit converts into a payout of arbitrary
+size within whatever bound applies.
 
-The practical exposure is therefore a function of tracker liquidity, not of the attacker's outlay, and
-it grows as subscription usage grows. That is a Medium rather than a Low, and it raises the priority of
-the redeployment below rather than changing the fix, which is already correct.
+**What actually bounds the payout.** The `Overflow` check compares against the `trackerBalance` *state
+variable*, not against the contract's native balance — and those diverge, because item 14 of this
+document records that `trackerBalance` is not decremented on withdrawal, so it drifts upward relative
+to funds actually held. On the live Gnosis instance the two read:
+
+| | value |
+|---|---|
+| `trackerBalance` | `50490000000000000000` (50.49 xDAI) |
+| actual native balance | `148619998044` wei (~1.5e-7 xDAI) |
+
+The guard therefore permits a computed payout well above the funds present; what prevents an actual
+overdraw is the native transfer failing for insufficient balance, which is a revert rather than a
+designed cap. Items 14 and 16 interact in this direction: the item-14 drift weakens the mitigation
+item 16 relies on.
+
+**Realisable exposure today.** The recoverable amount is bounded by the native balance actually held,
+which is ~1.49e11 wei (~1.5e-7 xDAI) on Gnosis. On Base, `tokenCreditRatio` reads `0`, so the
+conversion yields zero and the amplification cannot fire at all until a subscription is configured —
+that instance is inert with respect to this defect, not merely dormant.
+
+The severity is recorded as Medium for the **shape** of the risk — exposure scales with tracker
+liquidity rather than with the attacker's outlay, and grows as subscription usage grows — not because
+a Medium-value loss is presently available. It raises the priority of the redeployment below rather
+than changing the fix, which is already correct.
 
 **Deployment status:** the contract source has been updated, but the on-chain instances on
 Gnosis (`0x7D686bD1fD3CFF6E45a40165154D61043af7D67c`) and Base
@@ -570,4 +590,4 @@ payment type at a new tracker address — the same sequencing precaution applies
 snapshot the resolved balance tracker into `RequestInfo` at request time and settle against that snapshot,
 so a remap only affects requests created after it.
 
-- Contract: `MechMarketplace` (`request`, `deliverMarketplaceWithSignatures`, `setPaymentTypeBalanceTrackers`)
+- Contract: `MechMarketplace` (`request`, `deliverMarketplace`, `deliverMarketplaceWithSignatures`, `setPaymentTypeBalanceTrackers`) — the tracker is re-resolved on **both** delivery paths, so a snapshot fix must cover both
