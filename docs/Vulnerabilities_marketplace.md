@@ -27,6 +27,7 @@
 | 19 | Balance-tracker re-map strands residual requester balances | MechMarketplace, BalanceTrackerBase | Low |
 | 20 | EIP-712 domain separator hashes `VERSION` via `abi.encode` | MechMarketplace | Informative |
 | 21 | Mech payout keying vs. service multisig authorization | BalanceTrackerBase, OlasMech | Informative |
+| 22 | Payment-type balance-tracker remap misroutes in-flight request settlement | MechMarketplace | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -524,3 +525,49 @@ operator are the same party, so no change is recommended. Operators of services 
 should withdraw accrued balances promptly while the service is in `Deployed` state. A future
 version could snapshot the payout recipient at accrual time or settle mech balances on service
 state exit.
+
+
+### 22. Payment-type balance-tracker remap misroutes in-flight request settlement
+
+**Severity**: Low
+
+`MechMarketplace` resolves the balance tracker for a request twice from live state, and the request
+carries only the payment type in between. At request time the tracker is resolved and the requester
+debited:
+
+```solidity
+// MechMarketplace.request*(...)
+address balanceTracker = mapPaymentTypeBalanceTrackers[paymentType];
+IBalanceTracker(balanceTracker).checkAndRecordDeliveryRates{value: msg.value}(msg.sender, numRequests,
+    deliveryRate, paymentData);
+```
+
+`RequestInfo` stores `paymentType` but no tracker address, and at delivery time the tracker is
+re-resolved from the same map:
+
+```solidity
+// MechMarketplace.deliverMarketplace*(...)
+address balanceTracker = mapPaymentTypeBalanceTrackers[paymentType];
+IBalanceTracker(balanceTracker).finalizeDeliveryRates(msg.sender, requesters, deliveredRequests,
+    deliveryRates, requesterDeliveryRates);
+```
+
+If the owner re-points a payment type to a different balance tracker via
+`setPaymentTypeBalanceTrackers(paymentTypes, balanceTrackers)` while requests are in flight, those
+requests were debited on the old tracker but settle against the new one. `finalizeDeliveryRates` then
+credits the delivering mech out of the new tracker's liquidity without a matching debit there, while the
+reservation on the old tracker is left stranded.
+
+**Reachability.** `setPaymentTypeBalanceTrackers` is owner-only, so this is not third-party exploitable;
+it is a consequence of an administrative migration performed while requests are outstanding. It is
+adjacent to item 19 (which concerns residual requester *balances* stranded by a remap) but distinct: here
+a request *settles against the wrong custody bucket*.
+
+**Mitigation / guidance for operators.** Settle or drain all in-flight requests for a payment type before
+re-pointing its balance tracker. Note that replacing a directly-deployed balance tracker (for example the
+redeployment tracked under item 16) is itself such a remap, because closing it requires pointing the
+payment type at a new tracker address — the same sequencing precaution applies. A future version could
+snapshot the resolved balance tracker into `RequestInfo` at request time and settle against that snapshot,
+so a remap only affects requests created after it.
+
+- Contract: `MechMarketplace` (`request`, `deliverMarketplaceWithSignatures`, `setPaymentTypeBalanceTrackers`)
