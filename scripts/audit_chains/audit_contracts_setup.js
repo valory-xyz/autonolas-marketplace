@@ -166,9 +166,13 @@ async function checkBytecode(provider, configContracts, contractName, log, token
             const artifactTail = bytecode.slice(-86).toLowerCase();
             const onchainTail = onChainCode.slice(-86).toLowerCase();
             if (artifactTail !== onchainTail) {
+                // Show the leading bytes of the 43-byte CBOR trailer: that is where the metadata hash
+                // sits and therefore where the difference is. The trailing bytes encode the solc version
+                // and are identical whenever both were built by the same compiler, so printing those
+                // would show two identical strings next to the word "drift".
                 console.log(tag + ", WARN: metadata-trailer drift "
-                    + "(artifact ..." + artifactTail.slice(-12) + ", onchain ..." + onchainTail.slice(-12)
-                    + "); code length matches.");
+                    + "(artifact " + artifactTail.slice(0, 16) + "..., onchain " + onchainTail.slice(0, 16)
+                    + "...); code length matches.");
             }
             return;
         }

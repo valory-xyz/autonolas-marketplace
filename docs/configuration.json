@@ -115,7 +115,7 @@
       },
       {
         "name": "SubscriptionProvider",
-        "artifact": "abis/0.8.30/SubscriptionProvider.json",
+        "artifact": "abis/0.8.30-no-optimizer/SubscriptionProvider.json",
         "address": "0x4a2f40E14309c20c0C3803c3CcCd5E9B5F2D4eCA"
       }
     ]
@@ -202,7 +202,7 @@
       },
       {
         "name": "SubscriptionProvider",
-        "artifact": "abis/0.8.30/SubscriptionProvider.json",
+        "artifact": "abis/0.8.30-no-optimizer/SubscriptionProvider.json",
         "address": "0x5050c577583D25Ff9C9492A39e8D1B94028ffA55"
       }
     ]
