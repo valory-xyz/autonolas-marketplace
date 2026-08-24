@@ -20,6 +20,9 @@ const norm = (a) => (a ? ethers.utils.getAddress(a) : a);
 // Global accumulator for CSV rows (collected during setup checks)
 const ownershipRows = [];
 
+// Set by checkBytecode() when a Tier-1 (code length) mismatch is seen, so main() can exit non-zero.
+let bytecodeMismatchFound = false;
+
 // Custom expect that is wrapped into try / catch block
 function customExpect(arg1, arg2, log) {
     try {
@@ -104,10 +107,31 @@ async function checkOwner(chainId, contract, globalsInstance, log) {
 }
 
 // Check the bytecode
-async function checkBytecode(provider, configContracts, contractName, log) {
+// tokenName disambiguates the same-named balance trackers, exactly as findContractInstance() does.
+// configuration.json records both the USDC and the OLAS BalanceTrackerFixedPriceToken under that one
+// name on all six chains carrying them, so without this the loop returned on the first match and each
+// pair was bytecode-checked twice against the same address — the second deployment never read at all.
+async function checkBytecode(provider, configContracts, contractName, log, tokenName) {
     // Get the contract number from the set of configuration contracts
     for (let i = 0; i < configContracts.length; i++) {
         if (configContracts[i]["name"] === contractName) {
+            // Search for the corresponding BalanceTrackerFixedPriceToken
+            if (contractName === "BalanceTrackerFixedPriceToken" && configContracts[i]["token"] !== tokenName) {
+                continue;
+            }
+
+            // A configuration entry may name an artifact the repo does not ship. That is itself an audit
+            // finding — the repo cannot verify what is deployed at that address — but an unguarded
+            // readFileSync turns it into an uncaught ENOENT that aborts the whole run at that contract,
+            // leaving every later chain and contract unchecked. Report and carry on instead.
+            if (!fs.existsSync(configContracts[i]["artifact"])) {
+                console.log(log + ", address: " + configContracts[i]["address"]
+                    + ", FAIL: artifact not found: " + configContracts[i]["artifact"]);
+                console.log("\n");
+                bytecodeMismatchFound = true;
+                return;
+            }
+
             // Get the contract instance
             const contractFromJSON = fs.readFileSync(configContracts[i]["artifact"], "utf8");
             const parsedFile = JSON.parse(contractFromJSON);
@@ -120,13 +144,17 @@ async function checkBytecode(provider, configContracts, contractName, log) {
             const onChainCode = await provider.getCode(configContracts[i]["address"]);
             const tag = log + ", address: " + configContracts[i]["address"];
 
-            // Tier 1 (failure): on-chain code length must match the artifact's deployedBytecode length.
-            // If the lengths differ, the deployed instruction code is different from the artifact in the repo.
+            // Tier 1 (BLOCKING): on-chain code length must match the artifact's deployedBytecode length.
+            // Immutables occupy fixed slots, so they change the bytes but never the length — a length
+            // difference means the deployed instruction code differs from the artifact in the repo, which is
+            // the strongest "wrong implementation deployed" signal available. Flag the run to exit non-zero
+            // (see main()). Ported from the tokenomics auditor (autonolas-tokenomics#322).
             if (onChainCode.length !== bytecode.length) {
-                console.log(tag + ", bytecode length mismatch: artifact="
+                console.log(tag + ", FAIL: bytecode length mismatch: artifact="
                     + Math.max(0, (bytecode.length - 2) / 2) + "B onchain="
                     + Math.max(0, (onChainCode.length - 2) / 2) + "B");
                 console.log("\n");
+                bytecodeMismatchFound = true;
                 return;
             }
 
@@ -138,9 +166,13 @@ async function checkBytecode(provider, configContracts, contractName, log) {
             const artifactTail = bytecode.slice(-86).toLowerCase();
             const onchainTail = onChainCode.slice(-86).toLowerCase();
             if (artifactTail !== onchainTail) {
+                // Show the leading bytes of the 43-byte CBOR trailer: that is where the metadata hash
+                // sits and therefore where the difference is. The trailing bytes encode the solc version
+                // and are identical whenever both were built by the same compiler, so printing those
+                // would show two identical strings next to the word "drift".
                 console.log(tag + ", WARN: metadata-trailer drift "
-                    + "(artifact ..." + artifactTail.slice(-12) + ", onchain ..." + onchainTail.slice(-12)
-                    + "); code length matches.");
+                    + "(artifact " + artifactTail.slice(0, 16) + "..., onchain " + onchainTail.slice(0, 16)
+                    + "...); code length matches.");
             }
             return;
         }
@@ -286,7 +318,7 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
     }
 
     // Check the bytecode
-    await checkBytecode(provider, configContracts, contractName, log);
+    await checkBytecode(provider, configContracts, contractName, log, tokenName);
 
     log += ", address: " + balanceTracker.address;
     // Check mech marketplace
@@ -488,7 +520,13 @@ async function main() {
 }
 
 main()
-    .then(() => process.exit(0))
+    .then(() => {
+        if (bytecodeMismatchFound) {
+            console.error("AUDIT FAILED: at least one on-chain bytecode length mismatch (Tier 1) — see FAIL lines above.");
+            process.exit(1);
+        }
+        process.exit(0);
+    })
     .catch((error) => {
         console.error(error);
         process.exit(1);
