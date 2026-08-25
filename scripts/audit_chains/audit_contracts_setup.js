@@ -279,11 +279,16 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         // reported "expected false to equal true" on four chains, which read as a chain problem when
         // it was this file contradicting a deliberate decision.
         //
-        // Note the removal stopped at the factory. The fixed-price OLAS payment type still resolves
-        // to a balance tracker on every chain, so existing OLAS mechs continue to settle. Whether
-        // that is an intended wind-down or an unfinished removal is not recorded anywhere; if the
-        // payment types are cleared too, the OLAS BalanceTrackerFixedPriceToken entries should come
-        // out of docs/configuration.json at the same time.
+        // The removal stops at the factory BY DESIGN, and this is the part worth recording because
+        // the on-chain state looks half-finished without it. Disabling the factory blocks new mechs
+        // from joining; the fixed-price OLAS payment type is deliberately left registered so mechs
+        // that already exist can finish consuming their balances. So both states below are correct
+        // and neither should be "fixed":
+        //   mapMechFactories(OLAS factory)            == false  - asserted here
+        //   mapPaymentTypeBalanceTrackers(OLAS type)  != 0      - asserted further down
+        // The OLAS BalanceTrackerFixedPriceToken entries therefore stay in docs/configuration.json
+        // and stay audited for the duration of the wind-down. They come out only once the existing
+        // mechs are done and the payment types are cleared, and those two steps go together.
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
         customExpect(isFactoryWhitelisted, false, log + ", function: mapMechFactories() [OLAS factory, expected disabled]");
     }
