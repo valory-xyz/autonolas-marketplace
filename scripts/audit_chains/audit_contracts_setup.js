@@ -274,8 +274,18 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenUSDCAddress"]);
         customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
 
+        // OLAS fixed-price mech factories were disabled by governance, so no new OLAS-paid mech can
+        // be created. Assert the disabled state rather than the enabled one: expecting true here
+        // reported "expected false to equal true" on four chains, which read as a chain problem when
+        // it was this file contradicting a deliberate decision.
+        //
+        // Note the removal stopped at the factory. The fixed-price OLAS payment type still resolves
+        // to a balance tracker on every chain, so existing OLAS mechs continue to settle. Whether
+        // that is an intended wind-down or an unfinished removal is not recorded anywhere; if the
+        // payment types are cleared too, the OLAS BalanceTrackerFixedPriceToken entries should come
+        // out of docs/configuration.json at the same time.
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
-        customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
+        customExpect(isFactoryWhitelisted, false, log + ", function: mapMechFactories() [OLAS factory, expected disabled]");
     }
     if (chainId == 100) {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryNvmSubscriptionNativeAddress"]);
