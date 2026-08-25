@@ -39,6 +39,16 @@ function customExpect(arg1, arg2, log) {
     }
 }
 
+// Report a contract that has no configuration entry on this chain.
+// Absence must be visible: a contract that is genuinely not deployed here and a contract that SHOULD
+// be here but was never recorded look identical to the auditor, and returning quietly turns the
+// second one into a pass. Warn and let a reader decide which it is.
+function warnNotConfigured(log, contractName) {
+    console.log(log + ", WARN: no configuration entry on this chain - not audited."
+        + " If " + contractName + " is expected here, the entry is missing; if it is genuinely not"
+        + " deployed on this chain, this line is the record of that.");
+}
+
 // Write ownership CSV
 function writeOwnershipCsv(rows, outPath) {
     const headers = [
@@ -264,8 +274,18 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenUSDCAddress"]);
         customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
 
+        // OLAS fixed-price mech factories were disabled by governance, so no new OLAS-paid mech can
+        // be created. Assert the disabled state rather than the enabled one: expecting true here
+        // reported "expected false to equal true" on four chains, which read as a chain problem when
+        // it was this file contradicting a deliberate decision.
+        //
+        // Note the removal stopped at the factory. The fixed-price OLAS payment type still resolves
+        // to a balance tracker on every chain, so existing OLAS mechs continue to settle. Whether
+        // that is an intended wind-down or an unfinished removal is not recorded anywhere; if the
+        // payment types are cleared too, the OLAS BalanceTrackerFixedPriceToken entries should come
+        // out of docs/configuration.json at the same time.
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
-        customExpect(isFactoryWhitelisted, true, log + ", function: mapMechFactories()");
+        customExpect(isFactoryWhitelisted, false, log + ", function: mapMechFactories() [OLAS factory, expected disabled]");
     }
     if (chainId == 100) {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryNvmSubscriptionNativeAddress"]);
@@ -314,6 +334,7 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
     const balanceTracker = await findContractInstance(provider, configContracts, contractName, tokenName);
     // Check if the contract exists, since different networks might have different set of balance trackers
     if (typeof balanceTracker === "undefined") {
+        warnNotConfigured(log, contractName + (tokenName ? ": " + tokenName : ""));
         return;
     }
 
@@ -381,6 +402,7 @@ async function checkSubscriptionProvider(chainId, provider, globalsInstance, con
     const subscriptionProvider = await findContractInstance(provider, configContracts, contractName, "");
     // Check if the contract exists, since not all networks have a SubscriptionProvider deployed
     if (typeof subscriptionProvider === "undefined") {
+        warnNotConfigured(log, contractName);
         return;
     }
 
