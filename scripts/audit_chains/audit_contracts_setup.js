@@ -39,6 +39,16 @@ function customExpect(arg1, arg2, log) {
     }
 }
 
+// Report a contract that has no configuration entry on this chain.
+// Absence must be visible: a contract that is genuinely not deployed here and a contract that SHOULD
+// be here but was never recorded look identical to the auditor, and returning quietly turns the
+// second one into a pass. Warn and let a reader decide which it is.
+function warnNotConfigured(log, contractName) {
+    console.log(log + ", WARN: no configuration entry on this chain - not audited."
+        + " If " + contractName + " is expected here, the entry is missing; if it is genuinely not"
+        + " deployed on this chain, this line is the record of that.");
+}
+
 // Write ownership CSV
 function writeOwnershipCsv(rows, outPath) {
     const headers = [
@@ -314,6 +324,7 @@ async function checkBalanceTracker(chainId, provider, globalsInstance, configCon
     const balanceTracker = await findContractInstance(provider, configContracts, contractName, tokenName);
     // Check if the contract exists, since different networks might have different set of balance trackers
     if (typeof balanceTracker === "undefined") {
+        warnNotConfigured(log, contractName + (tokenName ? ": " + tokenName : ""));
         return;
     }
 
@@ -381,6 +392,7 @@ async function checkSubscriptionProvider(chainId, provider, globalsInstance, con
     const subscriptionProvider = await findContractInstance(provider, configContracts, contractName, "");
     // Check if the contract exists, since not all networks have a SubscriptionProvider deployed
     if (typeof subscriptionProvider === "undefined") {
+        warnNotConfigured(log, contractName);
         return;
     }
 
