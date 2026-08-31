@@ -28,6 +28,7 @@
 | 20 | EIP-712 domain separator hashes `VERSION` via `abi.encode` | MechMarketplace | Informative |
 | 21 | Mech payout keying vs. service multisig authorization | BalanceTrackerBase, OlasMech | Informative |
 | 22 | Payment-type balance-tracker remap misroutes in-flight request settlement | MechMarketplace | Low |
+| 23 | Fixed-price delivery is finalized and paid without a delivery payload | MechMarketplace, OlasMech, MechFixedPriceBase | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -591,3 +592,33 @@ snapshot the resolved balance tracker into `RequestInfo` at request time and set
 so a remap only affects requests created after it.
 
 - Contract: `MechMarketplace` (`request`, `deliverMarketplace`, `deliverMarketplaceWithSignatures`, `setPaymentTypeBalanceTrackers`) — the tracker is re-resolved on **both** delivery paths, so a snapshot fix must cover both
+
+### 23. Fixed-price delivery is finalized and paid without a delivery payload
+
+**Severity**: Low
+**Source**: internal review
+
+An authorized service operator can finalize a funded fixed-price request with an empty `deliveryData`. The
+request is marked `Delivered`, the full fixed rate is credited to the mech, and the operator can withdraw
+it.
+
+`deliveryData` is carried through `_prepareDeliveries` and `_preDeliver` and is then only ever emitted:
+
+```solidity
+emit Deliver(address(this), msg.sender, requestIds[i], deliveryRates[i], deliveryDatas[i]);
+```
+
+Settlement runs on `deliveryRates`. Nothing on the delivery path inspects the payload's length or content,
+so a zero-length delivery settles exactly as a full one does. `deliverToMarketplace()` and
+`deliverMarketplaceWithSignatures()` share this property.
+
+The contract cannot judge whether a delivery is *correct* — the payload is opaque by design and the
+requester chooses the mech and the rate, so quality is a trust relationship rather than something the
+marketplace can enforce. What is recorded here is narrower: the contract does not enforce even the cheapest
+available invariant, that something was delivered at all.
+
+**Mitigation.** Reject a zero-length `deliveryData` on every production delivery path. That is a small
+change and removes the provably-empty case without implying any guarantee about content. A verifiable
+output commitment would be needed for a real authorization guarantee, and is a protocol design decision well
+beyond this entry. Requesters should continue to select mechs on reputation, since on-chain settlement
+attests to delivery having occurred, not to its usefulness.
