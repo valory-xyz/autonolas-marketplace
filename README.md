@@ -1,5 +1,8 @@
 # Autonolas Marketplace
 
+## Bounty Program
+:mega::satellite::boom: The Autonolas bounty program and its details are available [here](https://immunefi.com/bounty/autonolas/).
+
 ## Introduction
 
 This repository contains the Mech Marketplace set of contracts registering mechs and performing their interactions for requests
@@ -121,6 +124,14 @@ The older list of contract addresses for different chains and their full contrac
 | Optimism | tbd   | https://optimistic.etherscan.io/address/0x47135D1Cf850d7Df7f7f563F300cc7022F7978a4  | n/a   | n/a   |
 | Optimism | https://optimistic.etherscan.io/address/0x75D529FAe220bC8db714F0202193726b46881B76   | n/a   | https://optimistic.etherscan.io/address/0x1BD1505B711Fb58C54ca3712e6BEf47A133892d9  | n/a   |
 
+
+### Static audit of the deployed setup
+The deployed contracts' on-chain configuration is checked against the values committed in
+[`docs/configuration.json`](./docs/configuration.json) by a static audit script. It compares live wiring,
+ownership and deployed bytecode against the repository's own artifacts, and exits non-zero on a mismatch:
+```
+node scripts/audit_chains/audit_contracts_setup.js
+```
 
 ### Audits
 - The latest external audit is the [Cantina January 2025 audit](https://github.com/valory-xyz/autonolas-marketplace/blob/main/audits/cantina_valory_january2025.pdf). All internal and external audit materials are in the [audits](https://github.com/valory-xyz/autonolas-marketplace/tree/main/audits) folder.
