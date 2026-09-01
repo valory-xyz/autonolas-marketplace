@@ -29,6 +29,7 @@
 | 21 | Mech payout keying vs. service multisig authorization | BalanceTrackerBase, OlasMech | Informative |
 | 22 | Payment-type balance-tracker remap misroutes in-flight request settlement | MechMarketplace | Low |
 | 23 | Fixed-price delivery is finalized and paid without a delivery payload | MechMarketplace, OlasMech, MechFixedPriceBase | Low |
+| 24 | Subscription fulfilment is permissionless and forwards caller-supplied parameters | SubscriptionProvider, BalanceTrackerNvmSubscriptionNative | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -622,3 +623,26 @@ change and removes the provably-empty case without implying any guarantee about 
 output commitment would be needed for a real authorization guarantee, and is a protocol design decision well
 beyond this entry. Requesters should continue to select mechs on reputation, since on-chain settlement
 attests to delivery having occurred, not to its usefulness.
+
+### 24. Subscription fulfilment is permissionless and forwards caller-supplied parameters
+
+**Severity**: Low
+**Source**: internal review
+
+`SubscriptionProvider.fulfill()` is `external` with no access control, while every other state-changing
+function in the same contract — `addDIDProvider`, `removeDIDProvider`, `changeOwner` — is owner-gated:
+
+```solidity
+if (msg.sender != owner) { revert OwnerOnly(msg.sender, owner); }
+```
+
+`fulfill()` forwards its caller's parameters unvalidated into the external subscription conditions,
+including the expiration the fulfilment is minted with. Because those conditions do not commit to every
+forwarded parameter in the identifier they check, a caller other than the intended one can drive the
+fulfilment with values of their choosing — for a finite subscription, minting it non-expiring — while the
+balance trackers continue to accept the resulting balance as entitlement.
+
+The conditions themselves are external dependencies and outside this repository. What is in scope is the
+wrapper: an ungated entry point that forwards unvalidated parameters into them. Either validating the
+forwarded parameters or gating `fulfill()` to the owner, consistently with the rest of the contract, closes
+the reachability from this side.
