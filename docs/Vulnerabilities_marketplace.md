@@ -31,6 +31,8 @@
 | 23 | Fixed-price delivery is finalized and paid without a delivery payload | MechMarketplace, OlasMech, MechFixedPriceBase | Low |
 | 24 | Subscription fulfilment is permissionless and forwards caller-supplied parameters | SubscriptionProvider, BalanceTrackerNvmSubscriptionNative | Low |
 | 25 | Nevermined fallback delivery can settle above the mech's advertised maximum rate | MechMarketplace, OlasMech, MechNvmSubscriptionNative, BalanceTrackerBase | Low |
+| 26 | Settlement is not atomic with delivery, and a requester's nonce serialises their concurrent requests | MechMarketplace, OlasMech | Low |
+| 27 | No mechanism exists to reserve a requester's balance before settlement | BalanceTrackerBase, MechMarketplace | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -687,3 +689,62 @@ charge, which is precisely what a published parameter of that name invites a rea
 
 Bounding the settled rate by the mech's own `maxDeliveryRate`, in addition to the requester cap, would make
 the advertised figure enforced rather than merely published.
+
+### 26. Settlement is not atomic with delivery, and a requester's nonce serialises their concurrent requests
+
+**Severity**: Low
+**Source**: internal review
+
+This entry records two constraints the contracts impose on anyone integrating a mech. Neither is a defect in
+the contracts; both are properties an integrator has to design around, and neither is stated elsewhere.
+
+**Settlement can fail after the work is done, and the contracts cannot know the work was done.** A mech
+performs a request off-chain and settles it on-chain afterwards. The contracts have no visibility of the
+off-chain step, so there is nothing they can bind it to — a settlement that reverts leaves no on-chain trace
+that anything was delivered. Settlement can revert for ordinary reasons: a stale signature, an insufficient
+balance at settlement time, or the nonce condition below.
+
+**A requester's nonce is consumed per settlement, not per request.** The signature path validates each
+request against the requester's current nonce and advances it when the batch settles. Two batches prepared
+against the same nonce value — which is what happens when a requester issues requests to two mechs before
+either has settled — cannot both settle. The first advances the nonce; the second is then signed against a
+value that no longer matches and reverts.
+
+**Consequence for an integrator.** A mech that releases its result before settlement is confirmed is
+extending unsecured credit: if settlement then fails, the result has been delivered and there is no on-chain
+means to recover payment for it. The safe pattern is to treat confirmed settlement, not accepted request, as
+the point at which a result may be released. A requester issuing concurrent requests should expect all but
+one to fail settlement unless they sequence them.
+
+No contract change addresses this — the constraint follows from the boundary between off-chain execution and
+on-chain settlement, and from the nonce being the replay protection. It is recorded so integrators do not
+have to discover it from a failed settlement.
+
+### 27. No mechanism exists to reserve a requester's balance before settlement
+
+**Severity**: Low
+**Source**: internal review
+
+The balance trackers debit a requester at settlement. **There is no call that reserves, locks or escrows a
+requester's balance ahead of it** — a mech deciding whether to accept a request can read the balance, but
+cannot hold any part of it.
+
+Two consequences follow, and both fall on mechs rather than on requesters:
+
+- **A balance sufficient for one request satisfies any number of pre-settlement checks.** Each check observes
+  the same unreserved figure, so several mechs can each conclude a requester is good for the work. Whichever
+  settles first consumes the balance; the rest revert at settlement, after the work is done.
+- **A requester is in practice serialised to one in-flight request per funded amount**, since nothing holds
+  their funds against the others.
+
+The trackers' accounting is correct throughout: settlement debits what is available at settlement. What is
+absent is a reservation primitive, and its absence is not visible from the tracker interface.
+
+**Consequence for an integrator.** Reading a balance is not a guarantee that it will still be there at
+settlement, so check-then-work is not a safe pattern. A mech should account for its own outstanding accepted
+requests against a requester before accepting another, or accept that concurrent acceptances may settle
+only once.
+
+Adding a reservation primitive would be a design change rather than a fix, with its own questions — expiry,
+release on failure, and interaction with in-flight requests. This entry records the current guarantee so it
+is not assumed to be stronger than it is.
