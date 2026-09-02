@@ -31,6 +31,9 @@
 | 23 | Fixed-price delivery is finalized and paid without a delivery payload | MechMarketplace, OlasMech, MechFixedPriceBase | Low |
 | 24 | Subscription fulfilment is permissionless and forwards caller-supplied parameters | SubscriptionProvider, BalanceTrackerNvmSubscriptionNative | Low |
 | 25 | Nevermined fallback delivery can settle above the mech's advertised maximum rate | MechMarketplace, OlasMech, MechNvmSubscriptionNative, BalanceTrackerBase | Low |
+| 26 | Mech responses are released before settlement is confirmed | MechMarketplace, OlasMech | Medium |
+| 27 | Requester balance is verified at settlement rather than at acceptance | BalanceTrackerBase, MechMarketplace | Medium |
+| 28 | Delivered responses are retrievable without authorisation | MechMarketplace, OlasMech | Medium |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -687,3 +690,71 @@ charge, which is precisely what a published parameter of that name invites a rea
 
 Bounding the settled rate by the mech's own `maxDeliveryRate`, in addition to the requester cap, would make
 the advertised figure enforced rather than merely published.
+
+### 26. Mech responses are released before settlement is confirmed
+
+**Severity**: Medium
+**Source**: internal review
+
+A mech returns its response to the requester over its off-chain channel **before** the corresponding
+on-chain settlement has been confirmed. Settlement is attempted afterwards, and can fail for ordinary
+reasons — a stale per-requester nonce, insufficient gas, a balance that has moved since the request was
+accepted.
+
+When it does fail, the ordering is what matters: the work has been performed and the result has already been
+handed over, while no payment occurs. The requester keeps the response; the mech absorbs the cost.
+
+Nothing on the contract side prevents this, because by the time settlement is attempted the off-chain
+delivery has already happened — the two are not atomic and cannot be made so from the contract alone.
+
+**The loss falls on the mech operator**, not on the protocol or on other requesters, and it is the operator
+who must act on it: a mech should withhold its response until settlement is confirmed, and treat delivery
+before confirmation as an unsecured extension of credit.
+
+Contracts: [MechMarketplace](../contracts/MechMarketplace.sol), [OlasMech](../contracts/OlasMech.sol)
+
+### 27. Requester balance is verified at settlement rather than at acceptance
+
+**Severity**: Medium
+**Source**: internal review
+
+A mech checks that a requester holds sufficient balance when it settles the request, not when it accepts it.
+No reservation is placed on the balance in between.
+
+Two consequences follow, both borne by mechs rather than by requesters:
+
+- A balance sufficient for one request can satisfy the acceptance check for several, because the check
+  observes the same unreserved balance each time. Whichever settles first consumes it; the others cannot.
+- A requester with several requests outstanding is in practice serialised to one, since nothing reserves
+  their funds against the others.
+
+Neither is a defect in the balance tracker's accounting, which is correct — settlement debits what is
+available at settlement. The gap is that acceptance and settlement observe the balance at different times
+with no lock between them.
+
+The remedy sits with the mech: reserve the requester's funds at acceptance, and decline a request that
+cannot be covered rather than performing work whose settlement may fail.
+
+Contracts: [BalanceTrackerBase](../contracts/BalanceTrackerBase.sol), [MechMarketplace](../contracts/MechMarketplace.sol)
+
+### 28. Delivered responses are retrievable without authorisation
+
+**Severity**: Medium
+**Source**: internal review
+
+Request identifiers are public: they appear in the settlement events the marketplace emits, so anyone
+indexing the marketplace can enumerate them.
+
+A mech's off-chain retrieval path does not authenticate the caller against the request it is asked about. A
+party holding a request identifier can therefore retrieve the corresponding response without having paid for
+it or having been the requester.
+
+The exposure lasts as long as the mech retains the response, which is a deployment property rather than a
+protocol one — a restart clears it.
+
+This is a property of the off-chain rail rather than of the contracts, which is why no contract change
+addresses it. The remedy is an authorisation check on retrieval, binding the caller to the requester that
+paid for the request. Operators running a mech that serves responses on request should assume, until such a
+check is in place, that anything delivered is publicly readable.
+
+Contracts: [MechMarketplace](../contracts/MechMarketplace.sol) (identifier emission), [OlasMech](../contracts/OlasMech.sol)
