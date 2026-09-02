@@ -757,7 +757,7 @@ is not assumed to be stronger than it is.
 
 A requester funds a balance tracker ahead of use, and that balance is debited as requests settle. **There is
 no withdraw function, and none is planned.** A deposited balance can be spent on requests to mechs using
-that payment type; it cannot be returned to the depositor.
+that payment type; no function returns it to the depositor.
 
 This is a deliberate design decision, recorded here because the interface does not show it: a depositor
 reading the tracker sees a balance credited to their address and may reasonably assume it can be reclaimed.
