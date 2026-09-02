@@ -185,6 +185,25 @@ This counter is view-only and used for informational purposes. No on-chain logic
 exact value for security-critical decisions. We recommend documenting this edge case as a known
 limitation. Off-chain consumers of `numUndeliveredRequests` should treat it as an approximate value.
 
+**One clarification on "view-only".** The counter and the linked list behind it are the mech's
+**work-discovery surface** — an agent calls `getUndeliveredRequestIds` to find what it should work
+on. Two consequences follow that a purely informational reading misses:
+
+- The stale entries are not merely a wrong number. A mech's agent is served request ids that are
+  already settled and can never be paid for, so an unmonitored mech does useless work.
+- The list is **third-party writable in effect**. Anyone may post requests naming a mech as priority
+  mech, and any other mech may then deliver them once the response window expires; neither action
+  touches the priority mech's own storage. So an unrelated party can inflate the affected mech's
+  queue at will.
+
+Clearing it is possible — the mech re-delivers the stale ids — and is roughly an order of magnitude
+cheaper per entry than creating one, so the gas asymmetry favours the affected mech. But
+`getUndeliveredRequestIds` traverses the list linearly, so a large enough backlog makes the view
+expensive well before it becomes unusable.
+
+The recommendation above is unchanged; one addition to it — a mech's work loop should not assume that
+every id the list returns is still deliverable.
+
 ### 7. No refund for expired undelivered requests
 **Severity**: Low
 
