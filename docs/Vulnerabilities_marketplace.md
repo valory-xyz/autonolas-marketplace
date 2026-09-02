@@ -33,6 +33,7 @@
 | 25 | Nevermined fallback delivery can settle above the mech's advertised maximum rate | MechMarketplace, OlasMech, MechNvmSubscriptionNative, BalanceTrackerBase | Low |
 | 26 | Settlement is not atomic with delivery, and a requester's nonce serialises their concurrent requests | MechMarketplace, OlasMech | Low |
 | 27 | No mechanism exists to reserve a requester's balance before settlement | BalanceTrackerBase, MechMarketplace | Low |
+| 28 | Requester balances are spend-only by design; no withdraw is provided | BalanceTrackerBase, BalanceTrackerFixedPriceNative, BalanceTrackerFixedPriceToken | Informative |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -748,3 +749,24 @@ only once.
 Adding a reservation primitive would be a design change rather than a fix, with its own questions — expiry,
 release on failure, and interaction with in-flight requests. This entry records the current guarantee so it
 is not assumed to be stronger than it is.
+
+### 28. Requester balances are spend-only by design; no withdraw is provided
+
+**Severity**: Informative
+**Source**: internal review
+
+A requester funds a balance tracker ahead of use, and that balance is debited as requests settle. **There is
+no withdraw function, and none is planned.** A deposited balance can be spent on requests to mechs using
+that payment type; it cannot be returned to the depositor.
+
+This is a deliberate design decision, recorded here because the interface does not show it: a depositor
+reading the tracker sees a balance credited to their address and may reasonably assume it can be reclaimed.
+It cannot.
+
+**What follows for an integrator.** Treat a deposit as a purchase of request capacity rather than as an
+escrow. Fund incrementally against expected usage rather than in large amounts up front, since anything
+deposited beyond what is eventually spent stays in the tracker indefinitely. A balance is keyed to the
+depositing address, so whoever controls that address controls the spending — for a service multisig, that is
+whoever the multisig's owners are at the time.
+
+No change is recommended.
