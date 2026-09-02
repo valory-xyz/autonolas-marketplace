@@ -30,6 +30,7 @@
 | 22 | Payment-type balance-tracker remap misroutes in-flight request settlement | MechMarketplace | Low |
 | 23 | Fixed-price delivery is finalized and paid without a delivery payload | MechMarketplace, OlasMech, MechFixedPriceBase | Low |
 | 24 | Subscription fulfilment is permissionless and forwards caller-supplied parameters | SubscriptionProvider, BalanceTrackerNvmSubscriptionNative | Low |
+| 25 | Nevermined fallback delivery can settle above the mech's advertised maximum rate | MechMarketplace, OlasMech, MechNvmSubscriptionNative, BalanceTrackerBase | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -646,3 +647,24 @@ The conditions themselves are external dependencies and outside this repository.
 wrapper: an ungated entry point that forwards unvalidated parameters into them. Either validating the
 forwarded parameters or gating `fulfill()` to the owner, consistently with the rest of the contract, closes
 the reachability from this side.
+
+### 25. Nevermined fallback delivery can settle above the mech's advertised maximum rate
+
+**Severity**: Low
+**Source**: internal review
+
+A mech publishes a `maxDeliveryRate` that consumers read to bound what it will charge. On the registered
+Nevermined fallback delivery path, that figure is not what is enforced: after a request times out, delivery
+accepts the rate decoded from the operator's data and validates it only against the **requester's** reserved
+cap, not against the mech's own advertised maximum.
+
+The two can therefore diverge — a settlement above the published `maxDeliveryRate`, on a mech that still
+advertises the lower figure.
+
+**No request is overcharged.** The requester's reserved cap still binds, so nothing settles beyond what that
+requester had already committed, and no third party's funds are involved. The consequence is narrower and
+purely informational: `maxDeliveryRate` cannot be relied on off-chain as an upper bound on what a mech will
+charge, which is precisely what a published parameter of that name invites a reader to assume.
+
+Bounding the settled rate by the mech's own `maxDeliveryRate`, in addition to the requester cap, would make
+the advertised figure enforced rather than merely published.
