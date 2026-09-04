@@ -34,6 +34,7 @@
 | 26 | Settlement is not atomic with delivery, and a requester's nonce serialises their concurrent requests | MechMarketplace, OlasMech | Low |
 | 27 | No mechanism exists to reserve a requester's balance before settlement | BalanceTrackerBase, MechMarketplace | Low |
 | 28 | Requester balances are spend-only by design; no withdraw is provided | BalanceTrackerBase, BalanceTrackerFixedPriceNative, BalanceTrackerFixedPriceToken | Informative |
+| 29 | Cached domain separator is guarded by an implementation immutable, not by the cache's own chain Id | MechMarketplace | Low |
 
 The present document aims to point out some vulnerabilities in the autonolas-marketplace
 contracts.
@@ -770,3 +771,49 @@ depositing address, so whoever controls that address controls the spending — f
 whoever the multisig's owners are at the time.
 
 No change is recommended.
+
+### 29. Cached domain separator is guarded by an implementation immutable, not by the cache's own chain Id
+
+**Severity**: Low
+**Source**: internal review
+
+`MechMarketplace` computes its EIP-712 domain separator once, during initialization, and stores it. Reads
+go through a guard that is meant to detect the one condition under which a cached separator becomes wrong —
+the chain Id changing underneath it:
+
+```solidity
+uint256 public immutable chainId;          // set in the constructor, per implementation
+bytes32 public domainSeparator;            // proxy storage, written once in initialize
+
+return block.chainid == chainId ? domainSeparator : _computeDomainSeparator();
+```
+
+**The guard compares `block.chainid` against an immutable of the implementation, rather than against a
+record of the chain the cache was written on.** Those two values are the same until an upgrade separates
+them:
+
+| step | stored separator | implementation `chainId` | `block.chainid` | result |
+|---|---|---|---|---|
+| initialized on chain A | A | A | A | cached — correct |
+| chain migrates to B | A | A | B | recomputed — correct, the guard works |
+| upgraded to an implementation deployed on B | A | **B** | B | cached — **stale, still bound to A** |
+
+The third row is the defect. The original implementation handles the migration correctly, and the upgrade
+undoes that: deploying a new implementation re-arms a guard that had been doing its job. Nothing in the
+upgrade path refreshes the stored separator, and `initialize` cannot run a second time. If it were reached,
+signatures produced for chain A would validate on chain B, and correctly B-bound signatures would not.
+
+**It is not reachable in any current deployment.** The precondition is a state-preserving chain-Id
+migration — a chain retaining its contract state while changing its EIP-155 identifier. That is a
+chain-level fork or renumbering: it is not something the protocol can cause, nor something an attacker can
+induce, and none of the chains this contract is deployed to has undergone one or announced an intention to.
+There is also no second route to the same divergence: the separator is written once, during initialization,
+and the proxy initializes atomically, so the cache cannot be left unset or written on a different chain from
+the implementation that guards it. The entry is recorded as a correctness defect in the upgrade path rather
+than as an exposure.
+
+We recommend storing the chain Id alongside the separator and comparing against that, so that both values
+are written together and the guard survives any upgrade. Recomputing the separator as part of each upgrade
+would also work, but it relies on every future upgrade remembering to do so; dropping the cache entirely
+removes the class at the cost of a `keccak256` per call. This is a separate defect from the `VERSION`
+hashing deviation in vulnerability #20, which affects the same function.
