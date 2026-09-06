@@ -233,3 +233,4 @@ e08b32e1e639b2f183894aaf92a7062e87c360b8:scripts/deployment/globals_celo_mainnet
 83ddbe566bccd537c7be5aa0bad027aebb1ef372:scripts/deployment/globals_celo_mainnet.json:generic-api-key:44
 83ddbe566bccd537c7be5aa0bad027aebb1ef372:scripts/deployment/globals_celo_mainnet.json:generic-api-key:45
   
+dc2bf9449c1067e2c43529d70d2d5eddad93cbd9:scripts/deployment/globals_robinhood_mainnet.json:generic-api-key:12
