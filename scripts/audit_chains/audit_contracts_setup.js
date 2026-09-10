@@ -289,8 +289,18 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         // The OLAS BalanceTrackerFixedPriceToken entries therefore stay in docs/configuration.json
         // and stay audited for the duration of the wind-down. They come out only once the existing
         // mechs are done and the payment types are cleared, and those two steps go together.
-        isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
-        customExpect(isFactoryWhitelisted, false, log + ", function: mapMechFactories() [OLAS factory, expected disabled]");
+        //
+        // A chain launched after the wind-down never gets an OLAS leg at all, so the globals carry no
+        // mechFactoryFixedPriceTokenOLASAddress. Reading the undefined key handed ethers an undefined
+        // address and aborted the whole run at this line, leaving every later contract and chain
+        // unchecked - so guard it the same way the NVM entries below are guarded, and say out loud
+        // that it was skipped rather than skipping in silence.
+        if (typeof globalsInstance["mechFactoryFixedPriceTokenOLASAddress"] !== "undefined") {
+            isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryFixedPriceTokenOLASAddress"]);
+            customExpect(isFactoryWhitelisted, false, log + ", function: mapMechFactories() [OLAS factory, expected disabled]");
+        } else {
+            warnNotConfigured(log + ", function: mapMechFactories()", "MechFactoryFixedPriceTokenOLAS");
+        }
     }
     if (chainId == 100) {
         isFactoryWhitelisted = await mechMarketplaceProxy.mapMechFactories(globalsInstance["mechFactoryNvmSubscriptionNativeAddress"]);
@@ -313,10 +323,15 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
         customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenUSDCAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
 
-        // FixedPriceToken (olas)
-        paymentType = "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9";
-        balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
-        customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
+        // FixedPriceToken (olas). Same reasoning as the OLAS factory above: on a chain with no OLAS leg
+        // the expected value is absent, and comparing against undefined would report a spurious failure.
+        if (typeof globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"] !== "undefined") {
+            paymentType = "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9";
+            balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
+            customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
+        } else {
+            warnNotConfigured(log + ", function: mapPaymentTypeBalanceTrackers()", "BalanceTrackerFixedPriceToken: OLAS");
+        }
     }
 
     // gnosis has a different behavior since its native is a stablecoin
@@ -471,7 +486,8 @@ async function main() {
             "polygon": "scripts/deployment/globals_polygon_mainnet.json",
             "optimism": "scripts/deployment/globals_optimism_mainnet.json",
             "arbitrum": "scripts/deployment/globals_arbitrum_mainnet.json",
-            "celo": "scripts/deployment/globals_celo_mainnet.json"
+            "celo": "scripts/deployment/globals_celo_mainnet.json",
+            "robinhood": "scripts/deployment/globals_robinhood_mainnet.json"
         };
 
         // Use Alchemy endpoints when API keys are provided, otherwise fall back to public RPCs
@@ -486,7 +502,8 @@ async function main() {
                 : "https://polygon-bor-rpc.publicnode.com",
             "optimism": "https://public-op-mainnet.fastnode.io",
             "arbitrum": "https://arb1.arbitrum.io/rpc",
-            "celo": "https://forno.celo.org"
+            "celo": "https://forno.celo.org",
+            "robinhood": "https://rpc.mainnet.chain.robinhood.com"
         };
 
         // Get all the globals processed

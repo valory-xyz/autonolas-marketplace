@@ -481,5 +481,53 @@
         "token": "olas"
       }
     ]
+  },
+  {
+    "name": "robinhood",
+    "chainId": "4663",
+    "contracts": [
+      {
+        "name": "Karma",
+        "artifact": "abis/deployed/RobinhoodKarma.json",
+        "address": "0xD09D608834510958AeDCB56c9F9e25A8Ef6D044E"
+      },
+      {
+        "name": "KarmaProxy",
+        "artifact": "abis/deployed/RobinhoodKarmaProxy.json",
+        "address": "0x63C2c53c09dE534Dd3bc0b7771bf976070936bAC"
+      },
+      {
+        "name": "MechMarketplace",
+        "artifact": "abis/deployed/RobinhoodMechMarketplace.json",
+        "address": "0x526E064cB694E8f5B7DB299158e17F33055B3943"
+      },
+      {
+        "name": "MechMarketplaceProxy",
+        "artifact": "abis/deployed/RobinhoodMechMarketplaceProxy.json",
+        "address": "0xa45E64d13A30a51b91ae0eb182e88a40e9b18eD8"
+      },
+      {
+        "name": "MechFactoryFixedPriceNative",
+        "artifact": "abis/deployed/RobinhoodMechFactoryFixedPriceNative.json",
+        "address": "0x04b0007b2aFb398015B76e5f22993a1fddF83644"
+      },
+      {
+        "name": "MechFactoryFixedPriceTokenUSDC",
+        "artifact": "abis/deployed/RobinhoodMechFactoryFixedPriceTokenUSDC.json",
+        "address": "0x7Fd1F4b764fA41d19fe3f63C85d12bf64d2bbf68",
+        "token": "usdc"
+      },
+      {
+        "name": "BalanceTrackerFixedPriceNative",
+        "artifact": "abis/deployed/RobinhoodBalanceTrackerFixedPriceNative.json",
+        "address": "0x1d79e0a600B61FAC1B8F40c27347e48962Ed2f23"
+      },
+      {
+        "name": "BalanceTrackerFixedPriceToken",
+        "artifact": "abis/deployed/RobinhoodBalanceTrackerFixedPriceToken.json",
+        "address": "0xEB5638eefE289691EcE01943f768EDBF96258a80",
+        "token": "usdc"
+      }
+    ]
   }
 ]
