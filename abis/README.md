@@ -14,3 +14,16 @@ deployed. Where a house convention and a deployment disagree, the deployment win
 recorded that deployment added them. Both are therefore **unoptimized** builds at 4897 B. The
 Optimism provider (`0x8Bb87107`, 2026-01-14) came after and matches the optimized
 `abis/0.8.30/SubscriptionProvider.json` at 3406 B, from identical source.
+
+## `deployed/`
+
+The per-solc directories are keyed on compiler settings, which is enough while one build serves every
+chain. It stops being enough once the same contract at the same solc version is deployed from two
+different pipelines: hardhat and `forge create` embed different metadata IPFS hashes, because the
+metadata document records source paths and remappings, so the trailing CBOR bytes differ even when
+the source and the settings are identical.
+
+`deployed/Robinhood*.json` are the forge artifacts for chain 4663. They are stored per-deployment
+rather than per-solc because they are the build that produced that chain's bytecode, trailer
+included — the `abis/0.8.30/` files match these contracts only on length. Nothing under
+`abis/<solc>/` changed, and no other chain's audit is affected.
