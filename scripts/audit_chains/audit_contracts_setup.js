@@ -323,14 +323,18 @@ async function checkMechMarketplaceProxy(chainId, provider, globalsInstance, con
         balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
         customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenUSDCAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
 
-        // FixedPriceToken (olas). Same reasoning as the OLAS factory above: on a chain with no OLAS leg
-        // the expected value is absent, and comparing against undefined would report a spurious failure.
+        // FixedPriceToken (olas). The payment type hash is a constant, so this mapping can be read on
+        // every chain whether or not an OLAS tracker was ever deployed - the globals key is needed only
+        // for the expected value. A chain with no OLAS leg is therefore asserted to be zero rather than
+        // skipped: skipping would leave the audit green if an OLAS tracker were later registered on a
+        // chain that is meant not to have one, which is exactly the state worth catching.
+        paymentType = "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9";
+        balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
         if (typeof globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"] !== "undefined") {
-            paymentType = "0x3679d66ef546e66ce9057c4a052f317b135bc8e8c509638f7966edfd4fcf45e9";
-            balanceTracker = await mechMarketplaceProxy.mapPaymentTypeBalanceTrackers(paymentType);
             customExpect(balanceTracker, globalsInstance["balanceTrackerFixedPriceTokenOLASAddress"], log + ", function: mapPaymentTypeBalanceTrackers()");
         } else {
-            warnNotConfigured(log + ", function: mapPaymentTypeBalanceTrackers()", "BalanceTrackerFixedPriceToken: OLAS");
+            customExpect(balanceTracker, ethers.constants.AddressZero,
+                log + ", function: mapPaymentTypeBalanceTrackers() [OLAS payment type, expected unregistered]");
         }
     }
 
