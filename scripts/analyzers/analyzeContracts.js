@@ -50,9 +50,9 @@ function generateReport() {
     
 
     const contractsInContractsDir = [
-        "mechs/nevermined/token/BalanceTrackerNvmSubscriptionToken.sol",
-        "mechs/nevermined/token/usdc/MechFactoryNvmSubscriptionTokenUSDC.sol",
-        "mechs/nevermined/token/usdc/MechNvmSubscriptionTokenUSDC.sol"
+        "deprecated/nevermined/token/BalanceTrackerNvmSubscriptionToken.sol",
+        "deprecated/nevermined/token/usdc/MechFactoryNvmSubscriptionTokenUSDC.sol",
+        "deprecated/nevermined/token/usdc/MechNvmSubscriptionTokenUSDC.sol"
 
     ];
 

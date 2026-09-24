@@ -61,7 +61,7 @@ fi
 mechMarketplaceProxyAddress=$(jq -r '.mechMarketplaceProxyAddress' $globals)
 
 contractName="MechFactoryNvmSubscriptionTokenUSDC"
-contractPath="contracts/mechs/nevermined/token/usdc/$contractName.sol:$contractName"
+contractPath="contracts/deprecated/nevermined/token/usdc/$contractName.sol:$contractName"
 constructorArgs="$mechMarketplaceProxyAddress"
 contractArgs="$contractPath --constructor-args $constructorArgs"
 

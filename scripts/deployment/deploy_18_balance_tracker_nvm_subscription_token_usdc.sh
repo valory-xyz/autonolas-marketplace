@@ -67,7 +67,7 @@ fi
 usdcAddress=$(jq -r '.usdcAddress' $globals)
 
 contractName="BalanceTrackerNvmSubscriptionToken"
-contractPath="contracts/mechs/nevermined/token/$contractName.sol:$contractName"
+contractPath="contracts/deprecated/nevermined/token/$contractName.sol:$contractName"
 constructorArgs="$mechMarketplaceProxyAddress $drainerAddress $usdcAddress"
 contractArgs="$contractPath --constructor-args $constructorArgs"
 
