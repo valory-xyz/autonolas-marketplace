@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.30;
 
-import {BalanceTrackerFixedPriceToken, ZeroAddress, NoDepositAllowed} from "../../token/BalanceTrackerFixedPriceToken.sol";
-import {ZeroValue, InsufficientBalance} from "../../../BalanceTrackerBase.sol";
+import {BalanceTrackerFixedPriceNative, ZeroAddress} from "../../mechs/native/BalanceTrackerFixedPriceNative.sol";
+import {ZeroValue, InsufficientBalance} from "../../BalanceTrackerBase.sol";
 
 interface IERC1155 {
     /// @dev Gets the amount of tokens owned by a specified account.
@@ -18,14 +18,6 @@ interface IERC1155 {
     function burn(address account, uint256 tokenId, uint256 amount) external;
 }
 
-// IERC20 interface
-interface IERC20 {
-    /// @dev Gets the amount of tokens owned by a specified account.
-    /// @param account Account address.
-    /// @return Amount of tokens owned.
-    function balanceOf(address account) external view returns (uint256);
-}
-
 /// @dev Only `owner` has a privilege, but the `sender` was provided.
 /// @param sender Sender address.
 /// @param owner Required sender address as an owner.
@@ -36,8 +28,12 @@ error OwnerOnly(address sender, address owner);
 /// @param max Maximum possible value.
 error Overflow(uint256 provided, uint256 max);
 
-/// @title BalanceTrackerFixedPriceToken - smart contract for tracking mech and requester subscription balances based on ERC20 token
-contract BalanceTrackerNvmSubscriptionToken is BalanceTrackerFixedPriceToken {
+/// @dev No incoming msg.value is allowed.
+/// @param amount Value amount.
+error NoDepositAllowed(uint256 amount);
+
+/// @title BalanceTrackerFixedPriceNative - smart contract for tracking mech and requester subscription balances based on native token
+contract BalanceTrackerNvmSubscriptionNative is BalanceTrackerFixedPriceNative {
     event SubscriptionSet(address indexed token, uint256 indexed tokenId);
     event RequesterCreditsRedeemed(address indexed account, uint256 amount);
 
@@ -49,15 +45,17 @@ contract BalanceTrackerNvmSubscriptionToken is BalanceTrackerFixedPriceToken {
     // N credits for M tokens, tokenCreditRatio = M * 10^18 / N
     uint256 public tokenCreditRatio;
 
+    // Current contract balance
+    uint256 public trackerBalance;
     // Temporary owner address
     address public owner;
 
     /// @dev BalanceTrackerSubscription constructor.
     /// @param _mechMarketplace Mech marketplace address.
     /// @param _drainer Drainer address.
-    /// @param _token Token address.
-    constructor(address _mechMarketplace, address _drainer, address _token)
-        BalanceTrackerFixedPriceToken(_mechMarketplace, _drainer, _token)
+    /// @param _wrappedNativeToken Wrapped native token address.
+    constructor(address _mechMarketplace, address _drainer, address _wrappedNativeToken)
+        BalanceTrackerFixedPriceNative(_mechMarketplace, _drainer, _wrappedNativeToken)
     {
         owner = msg.sender;
     }
@@ -95,9 +93,15 @@ contract BalanceTrackerNvmSubscriptionToken is BalanceTrackerFixedPriceToken {
         return balance;
     }
 
-    /// @dev Gets required token funds.
-    /// @return Received amount.
-    function _getRequiredFunds(address, uint256) internal pure virtual override returns (uint256) {
+    /// @dev Gets native token value or restricts receiving one.
+    /// @notice Since the contract is subscription based, no additional funding can be sent when posting a request.
+    /// @return Received value.
+    function _getOrRestrictNativeValue() internal virtual override returns (uint256) {
+        // Check for msg.value
+        if (msg.value > 0) {
+            revert NoDepositAllowed(msg.value);
+        }
+
         return 0;
     }
 
@@ -117,7 +121,6 @@ contract BalanceTrackerNvmSubscriptionToken is BalanceTrackerFixedPriceToken {
         mapMechBalances[mech] = balance;
 
         // Check current contract balance
-        uint256 trackerBalance = IERC20(token).balanceOf(address(this));
         if (balance > trackerBalance) {
             revert Overflow(balance, trackerBalance);
         }
@@ -154,15 +157,16 @@ contract BalanceTrackerNvmSubscriptionToken is BalanceTrackerFixedPriceToken {
         emit SubscriptionSet(_subscriptionNFT, _subscriptionTokenId);
     }
 
-    /// @dev Deposits token funds for requester.
-    /// @param amount Token amount.
-    function deposit(uint256 amount) external pure virtual override {
-        revert NoDepositAllowed(amount);
+    /// @dev Deposits funds reflecting subscription.
+    receive() external virtual override payable {
+        // Record actual balance
+        trackerBalance += msg.value;
+
+        emit Deposit(msg.sender, address(0), msg.value);
     }
 
     /// @dev Deposits token funds for requester.
-    /// @param amount Token amount.
-    function depositFor(address, uint256 amount) external pure virtual override {
-        revert NoDepositAllowed(amount);
+    function depositFor(address) external payable virtual override {
+        revert NoDepositAllowed(msg.value);
     }
 }

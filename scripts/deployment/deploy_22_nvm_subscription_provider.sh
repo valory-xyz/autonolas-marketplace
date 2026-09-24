@@ -35,7 +35,7 @@ elif [ $chainId == 80002 ]; then
 fi
 
 contractName="SubscriptionProvider"
-contractPath="contracts/mechs/nevermined/utils/$contractName.sol:$contractName"
+contractPath="contracts/deprecated/nevermined/utils/$contractName.sol:$contractName"
 constructorArgs="$didRegistryAddress $transferNFTConditionAddress $escrowPaymentConditionAddress"
 contractArgs="$contractPath --constructor-args $constructorArgs"
 
