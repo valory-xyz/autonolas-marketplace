@@ -348,6 +348,61 @@ contract MechMarketplace is IErrorsMarketplace {
         emit MarketplaceDeliveryWithSignatures(msg.sender, requester, requestIds.length, requestIds);
     }
 
+    /// @dev Delivers signed requests with per-request price caps and requester-chosen per-request nonces.
+    /// @notice Each request carries its own requester-chosen nonce, so the resulting request Ids are independent
+    ///         of the shared sequential counter (mapNonces) and sets of independently signed requests can be
+    ///         settled in any order. Replay is prevented by the per-request-Id record in mapRequestIdInfos.
+    /// @param requester Requester address.
+    /// @param paymentType Delivering mech payment type.
+    /// @param deliverWithSignatures Set of DeliverWithSignature structs.
+    /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
+    /// @param maxRates Signed cap for each request — the value the requester signed over.
+    /// @param nonces Requester-chosen per-request nonce for each request — the value the requester signed over.
+    function _deliverMarketplaceWithSignatures(
+        address requester,
+        bytes32 paymentType,
+        DeliverWithSignature[] memory deliverWithSignatures,
+        uint256[] calldata deliveryRates,
+        uint256[] calldata maxRates,
+        uint256[] calldata nonces
+    ) internal {
+        // Check mech
+        address mechServiceMultisig = checkMech(msg.sender);
+
+        // Get number of requests
+        uint256 numRequests = deliverWithSignatures.length;
+
+        // Allocate set for request Ids
+        bytes32[] memory requestIds = new bytes32[](numRequests);
+
+        // Traverse all requests; each one is identified by its own requester-chosen nonce rather than a counter
+        for (uint256 i = 0; i < numRequests; ++i) {
+            requestIds[i] = _processSignedDelivery(requester, paymentType, mechServiceMultisig,
+                deliverWithSignatures[i], deliveryRates[i], maxRates[i], nonces[i]);
+        }
+
+        // Record the request count
+        mapRequestCounts[requester] += numRequests;
+        // Increase the amount of requester delivered requests
+        mapDeliveryCounts[requester] += numRequests;
+        // Increase the amount of mech delivery counts
+        mapMechDeliveryCounts[msg.sender] += numRequests;
+        // Increase the amount of mech service multisig delivered requests
+        mapMechServiceDeliveryCounts[mechServiceMultisig] += numRequests;
+        // Increase the total number of requests
+        numTotalRequests += numRequests;
+
+        // Increase mech requester karma
+        IKarma(karma).changeRequesterMechKarma(requester, msg.sender, int256(numRequests));
+        // Increase mech karma that delivers the request
+        IKarma(karma).changeMechKarma(msg.sender, int256(numRequests));
+
+        // Update mech stats
+        IMech(msg.sender).updateNumRequests(numRequests);
+
+        emit MarketplaceDeliveryWithSignatures(msg.sender, requester, requestIds.length, requestIds);
+    }
+
     /// @dev Validates and records a single signed delivery under a per-request cap, and emits the delivery event.
     /// @notice Split out of _deliverMarketplaceWithSignatures to keep its loop frame under the stack ceiling.
     /// @param requester Requester address.
@@ -402,6 +457,29 @@ contract MechMarketplace is IErrorsMarketplace {
         // Symmetrical delivery mech event that in general happens when delivery is called directly through the mech
         emit Deliver(msg.sender, mechServiceMultisig, requestId, deliveryRate, deliverWithSignature.requestData,
             deliverWithSignature.deliveryData);
+    }
+
+    /// @dev Charges a batch of signed deliveries via the payment-type balance tracker.
+    /// @notice Split out to keep the per-request-nonce entrypoint frame under the stack ceiling.
+    /// @param paymentType Delivering mech payment type.
+    /// @param requester Requester address.
+    /// @param deliveryRates Actual charged delivery rate for each request.
+    /// @param paymentData Additional payment-related request data, if applicable.
+    function _chargeMechDelivery(
+        bytes32 paymentType,
+        address requester,
+        uint256[] calldata deliveryRates,
+        bytes calldata paymentData
+    ) internal {
+        // Get balance tracker address
+        address balanceTracker = mapPaymentTypeBalanceTrackers[paymentType];
+        // Check for zero address
+        if (balanceTracker == address(0)) {
+            revert ZeroAddress();
+        }
+
+        // Process mech payment at the actual delivery rates
+        IBalanceTracker(balanceTracker).adjustMechRequesterBalances(msg.sender, requester, deliveryRates, paymentData);
     }
 
     /// @dev Registers batch of requests.
@@ -1032,6 +1110,51 @@ contract MechMarketplace is IErrorsMarketplace {
 
         // Process mech payment at the actual delivery rates
         IBalanceTracker(balanceTracker).adjustMechRequesterBalances(msg.sender, requester, deliveryRates, paymentData);
+
+        _locked = 1;
+    }
+
+    /// @dev Delivers signed requests with per-request price caps and requester-chosen per-request nonces.
+    /// @notice Overload of deliverMarketplaceWithSignatures where each request carries its own requester-chosen
+    ///         nonce. This decouples request Ids from the shared sequential counter so sets of independently
+    ///         signed requests can be settled in any order, and in independent transactions, without one set
+    ///         invalidating another. Replay is prevented by the per-request-Id record in mapRequestIdInfos.
+    /// @param requester Requester address.
+    /// @param deliverWithSignatures Set of DeliverWithSignature structs.
+    /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
+    /// @param maxRates Signed cap for each request.
+    /// @param nonces Requester-chosen per-request nonce for each request.
+    /// @param paymentData Additional payment-related request data, if applicable.
+    function deliverMarketplaceWithSignatures(
+        address requester,
+        DeliverWithSignature[] calldata deliverWithSignatures,
+        uint256[] calldata deliveryRates,
+        uint256[] calldata maxRates,
+        uint256[] calldata nonces,
+        bytes calldata paymentData
+    ) external {
+        // Reentrancy guard
+        if (_locked == 2) {
+            revert ReentrancyGuard();
+        }
+        _locked = 2;
+
+        // Array length checks
+        uint256 numRequests = deliverWithSignatures.length;
+        if (numRequests == 0 || numRequests != deliveryRates.length || numRequests != maxRates.length
+            || numRequests != nonces.length) {
+            revert WrongArrayLength(numRequests, nonces.length);
+        }
+
+        // Payment type
+        bytes32 paymentType = IMech(msg.sender).paymentType();
+
+        // Process deliveries under the signed caps, keyed by the requester-chosen per-request nonces
+        _deliverMarketplaceWithSignatures(requester, paymentType, deliverWithSignatures, deliveryRates, maxRates,
+            nonces);
+
+        // Process mech payment at the actual delivery rates
+        _chargeMechDelivery(paymentType, requester, deliveryRates, paymentData);
 
         _locked = 1;
     }
