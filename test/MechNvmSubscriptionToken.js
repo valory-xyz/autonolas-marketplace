@@ -385,7 +385,7 @@ describe("MechNvmSubscriptionToken", function () {
             }
 
             await expect(
-                priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                     deliveryRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
 

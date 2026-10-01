@@ -376,7 +376,7 @@ describe("MechNvmSubscriptionNative", function () {
             }
 
             await expect(
-                priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                     deliveryRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
 
@@ -384,6 +384,67 @@ describe("MechNvmSubscriptionNative", function () {
             for (let i = 0; i < requestCount; i++) {
                 deliverWithSignatures.push({requestData: datas[i], signature: signatures[i], deliveryData: datas[i]});
             }
+        });
+
+        it("Requests with signatures and per-request caps", async function () {
+            const numRequests = 10;
+            const datas = new Array();
+            const requestIds = new Array();
+            const signatures = new Array();
+            // Signed caps and the lower actual rates the mech charges
+            const maxRates = new Array(numRequests).fill(maxDeliveryRate);
+            const deliveryRates = new Array(numRequests).fill(maxDeliveryRate - 1);
+            let requestCount = 0;
+
+            // Buy a subscription sized for the caps
+            await mockNvmSubscriptionNative.mint(subscriptionId, numRequests * maxDeliveryRate,
+                {value: numRequests * maxDeliveryRate * normalizedRatio});
+
+            // Get deployer wallet
+            const accounts = config.networks.hardhat.accounts;
+            const wallet = ethers.Wallet.fromMnemonic(accounts.mnemonic, accounts.path + `/${0}`);
+            const signingKey = new ethers.utils.SigningKey(wallet.privateKey);
+
+            // Stack all requests; the signed request Id is computed over the cap (maxRates), not the charged rate
+            for (let i = 0; i < numRequests; i++) {
+                datas[i] = data + "00".repeat(i);
+                requestIds[i] = await mechMarketplace.getRequestId(priorityMech.address, deployer.address, datas[i],
+                    maxRates[i], paymentType, requestCount);
+                const signature = signingKey.signDigest(requestIds[i]);
+                const r = ethers.utils.arrayify(signature.r);
+                const s = ethers.utils.arrayify(signature.s);
+                const v = ethers.utils.arrayify(signature.v);
+                // Assemble 65 bytes of signature
+                signatures[i] = ethers.utils.hexlify(ethers.utils.concat([r, s, v]));
+                requestCount++;
+            }
+
+            const deliverWithSignatures = [];
+            for (let i = 0; i < requestCount; i++) {
+                deliverWithSignatures.push({requestData: datas[i], signature: signatures[i], deliveryData: datas[i]});
+            }
+
+            // Array length mismatch reverts
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],bytes)"](
+                    deployer.address, deliverWithSignatures, deliveryRates.slice(1), maxRates, "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+
+            // Charging above the signed cap reverts
+            const overCap = Array.from(deliveryRates);
+            overCap[0] = maxRates[0] + 1;
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],bytes)"](
+                    deployer.address, deliverWithSignatures, overCap, maxRates, "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "RateOverCap");
+
+            // Successful delivery charging the actual (below-cap) rates
+            await priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],bytes)"](
+                deployer.address, deliverWithSignatures, deliveryRates, maxRates, "0x");
+
+            // The recorded delivery rate is the actual charged rate, not the signed cap
+            const requestInfo = await mechMarketplace.mapRequestIdInfos(requestIds[0]);
+            expect(requestInfo.deliveryRate).to.equal(deliveryRates[0]);
         });
     });
 });

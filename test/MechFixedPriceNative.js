@@ -758,7 +758,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             await expect(
-                priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                     deliveryRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
 
@@ -768,7 +768,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             // Deliver requests
-            await priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+            await priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                 deliveryRates, "0x");
 
             // Check requests counts
@@ -836,7 +836,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             await expect(
-                priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                     deliveryRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
 
@@ -846,7 +846,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             // Deliver requests
-            await priorityMech.deliverMarketplaceWithSignatures(deployer.address, deliverWithSignatures,
+            await priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](deployer.address, deliverWithSignatures,
                 deliveryRates, "0x");
 
             // Check requests counts
@@ -892,7 +892,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             await expect(
-                priorityMech.deliverMarketplaceWithSignatures(mockOperatorContract.address, deliverWithSignatures,
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](mockOperatorContract.address, deliverWithSignatures,
                     deliveryRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
 
@@ -902,7 +902,7 @@ describe("MechFixedPriceNative", function () {
             }
 
             // Deliver requests
-            await priorityMech.deliverMarketplaceWithSignatures(mockOperatorContract.address, deliverWithSignatures,
+            await priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],bytes)"](mockOperatorContract.address, deliverWithSignatures,
                 deliveryRates, "0x");
 
             // Try to adjustMechRequesterBalances not by marketplace
