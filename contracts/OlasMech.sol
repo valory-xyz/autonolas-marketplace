@@ -292,6 +292,23 @@ abstract contract OlasMech is Mech, IErrorsMech {
             deliveryRates, paymentData);
     }
 
+    /// @dev Delivers signed requests with per-request price caps (overload).
+    /// @param requester Requester address.
+    /// @param deliverWithSignatures Set of DeliverWithSignature structs.
+    /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
+    /// @param maxRates Signed cap for each request.
+    /// @param paymentData Additional payment-related request data, if applicable.
+    function deliverMarketplaceWithSignatures(
+        address requester,
+        DeliverWithSignature[] calldata deliverWithSignatures,
+        uint256[] calldata deliveryRates,
+        uint256[] calldata maxRates,
+        bytes calldata paymentData
+    ) external onlyOperator {
+        IMechMarketplace(mechMarketplace).deliverMarketplaceWithSignatures(requester, deliverWithSignatures,
+            deliveryRates, maxRates, paymentData);
+    }
+
     /// @dev Gets mech token (service registry) address.
     /// @return serviceRegistry Service registry address.
     function token() external view returns (address ) {
