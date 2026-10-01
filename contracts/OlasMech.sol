@@ -314,7 +314,11 @@ abstract contract OlasMech is Mech, IErrorsMech {
     /// @param deliverWithSignatures Set of DeliverWithSignature structs.
     /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
     /// @param maxRates Signed cap for each request.
-    /// @param nonces Requester-chosen per-request nonce for each request.
+    /// @param nonces Requester-chosen per-request nonce (salt) for each request, signed over by the requester.
+    ///        Each value must be unique per (mech, requestData, deliveryRate, paymentType) tuple. If the requester
+    ///        also uses request() or the sequential deliverMarketplaceWithSignatures overloads, these nonces should
+    ///        be drawn from a range disjoint from the sequential mapNonces counter (e.g. random or timestamp-based)
+    ///        to avoid request Id collisions with those paths.
     /// @param paymentData Additional payment-related request data, if applicable.
     function deliverMarketplaceWithSignatures(
         address requester,
