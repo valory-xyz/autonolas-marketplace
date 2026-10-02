@@ -46,6 +46,13 @@ jobs:
       - name: Run tests
         run: ./node_modules/.bin/hardhat test
 
+      # Foundry mainnet-fork suite (Proposal01FeeActivation forks mainnet at a pinned block).
+      # The "mainnet" alias resolves via foundry.toml [rpc_endpoints] to ETH_RPC_URL (repo secret).
+      - name: Run foundry tests
+        env:
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+        run: forge test -vvv
+
       # Run hardhat coverage
       - name: Solidity coverage summary
         run: ./node_modules/.bin/hardhat coverage
