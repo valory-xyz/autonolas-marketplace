@@ -21,4 +21,8 @@ interface IMechMarketplace {
     function deliverMarketplaceWithSignatures(
         address requester, DeliverWithSignature[] calldata deliverWithSignatures, uint256[] calldata deliveryRates,
             bytes calldata paymentData) external;
+
+    function deliverMarketplaceWithSignatures(
+        address requester, DeliverWithSignature[] calldata deliverWithSignatures, uint256[] calldata deliveryRates,
+            uint256[] calldata maxRates, bytes calldata paymentData) external;
 }

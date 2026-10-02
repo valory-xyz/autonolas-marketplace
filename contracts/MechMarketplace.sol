@@ -47,6 +47,11 @@ struct RequestInfo {
     bytes32 paymentType;
 }
 
+/// @dev The actual delivery rate exceeds the cap the requester signed.
+/// @param actual Actual charged delivery rate.
+/// @param cap Signed maximum delivery rate.
+error RateOverCap(uint256 actual, uint256 cap);
+
 /// @title Mech Marketplace - Marketplace for posting and delivering requests served by mechs
 /// @author Aleksandr Kuperman - <aleksandr.kuperman@valory.xyz>
 /// @author Andrey Lebedev - <andrey.lebedev@valory.xyz>
@@ -282,6 +287,121 @@ contract MechMarketplace is IErrorsMarketplace {
         IMech(msg.sender).updateNumRequests(numRequests);
 
         emit MarketplaceDeliveryWithSignatures(msg.sender, requester, requestIds.length, requestIds);
+    }
+
+    /// @dev Delivers signed requests under per-request price caps (cap-and-actual pricing).
+    /// @param requester Requester address.
+    /// @param paymentType Delivering mech payment type.
+    /// @param deliverWithSignatures Set of DeliverWithSignature structs.
+    /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
+    /// @param maxRates Signed cap for each request — the value the requester signed over.
+    function _deliverMarketplaceWithSignatures(
+        address requester,
+        bytes32 paymentType,
+        DeliverWithSignature[] memory deliverWithSignatures,
+        uint256[] calldata deliveryRates,
+        uint256[] calldata maxRates
+    ) internal {
+        // Check mech
+        address mechServiceMultisig = checkMech(msg.sender);
+
+        // Get number of requests
+        uint256 numRequests = deliverWithSignatures.length;
+
+        // Allocate set for request Ids
+        bytes32[] memory requestIds = new bytes32[](numRequests);
+
+        // Get current nonce
+        uint256 nonce = mapNonces[requester];
+
+        // Traverse all request Ids; the per-request body lives in a helper to keep this frame under the stack ceiling
+        for (uint256 i = 0; i < numRequests; ++i) {
+            requestIds[i] = _processSignedDelivery(requester, paymentType, mechServiceMultisig,
+                deliverWithSignatures[i], deliveryRates[i], maxRates[i], nonce);
+
+            // Increase nonce
+            nonce++;
+        }
+
+        // Adjust requester nonce values
+        mapNonces[requester] = nonce;
+
+        // Record the request count
+        mapRequestCounts[requester] += numRequests;
+        // Increase the amount of requester delivered requests
+        mapDeliveryCounts[requester] += numRequests;
+        // Increase the amount of mech delivery counts
+        mapMechDeliveryCounts[msg.sender] += numRequests;
+        // Increase the amount of mech service multisig delivered requests
+        mapMechServiceDeliveryCounts[mechServiceMultisig] += numRequests;
+        // Increase the total number of requests
+        numTotalRequests += numRequests;
+
+        // Increase mech requester karma
+        IKarma(karma).changeRequesterMechKarma(requester, msg.sender, int256(numRequests));
+        // Increase mech karma that delivers the request
+        IKarma(karma).changeMechKarma(msg.sender, int256(numRequests));
+
+        // Update mech stats
+        IMech(msg.sender).updateNumRequests(numRequests);
+
+        emit MarketplaceDeliveryWithSignatures(msg.sender, requester, requestIds.length, requestIds);
+    }
+
+    /// @dev Validates and records a single signed delivery under a per-request cap, and emits the delivery event.
+    /// @notice Split out of _deliverMarketplaceWithSignatures to keep its loop frame under the stack ceiling.
+    /// @param requester Requester address.
+    /// @param paymentType Delivering mech payment type.
+    /// @param mechServiceMultisig Mech service multisig address.
+    /// @param deliverWithSignature DeliverWithSignature struct for this request.
+    /// @param deliveryRate Actual charged delivery rate (must be <= the signed cap).
+    /// @param maxRate Signed cap for this request — the value the requester signed over.
+    /// @param nonce Requester nonce for this request.
+    /// @return requestId Resulting request Id.
+    function _processSignedDelivery(
+        address requester,
+        bytes32 paymentType,
+        address mechServiceMultisig,
+        DeliverWithSignature memory deliverWithSignature,
+        uint256 deliveryRate,
+        uint256 maxRate,
+        uint256 nonce
+    ) internal returns (bytes32 requestId) {
+        // Check for non-zero data
+        if (deliverWithSignature.requestData.length == 0) {
+            revert ZeroValue();
+        }
+
+        // Calculate request Id over the signed cap, not the charged rate
+        requestId = getRequestId(msg.sender, requester, deliverWithSignature.requestData, maxRate, paymentType, nonce);
+
+        // Verify the signed hash against the requester address
+        _verifySignedHash(requester, requestId, deliverWithSignature.signature);
+
+        // The mech cannot charge more than the requester signed for
+        if (deliveryRate > maxRate) {
+            revert RateOverCap(deliveryRate, maxRate);
+        }
+
+        // Get request info struct
+        RequestInfo storage requestInfo = mapRequestIdInfos[requestId];
+
+        // Check for request Id record
+        if (requestInfo.priorityMech != address(0)) {
+            revert AlreadyRequested(requestId);
+        }
+
+        // Record all the request info, charging the actual delivery rate
+        requestInfo.priorityMech = msg.sender;
+        requestInfo.deliveryMech = msg.sender;
+        requestInfo.requester = requester;
+        requestInfo.deliveryRate = deliveryRate;
+        requestInfo.paymentType = paymentType;
+        // requestInfo.responseTimeout is not set which clearly separates these requests with signature from others
+
+        // Symmetrical delivery mech event that in general happens when delivery is called directly through the mech
+        emit Deliver(msg.sender, mechServiceMultisig, requestId, deliveryRate, deliverWithSignature.requestData,
+            deliverWithSignature.deliveryData);
     }
 
     /// @dev Registers batch of requests.
@@ -861,6 +981,56 @@ contract MechMarketplace is IErrorsMarketplace {
         }
 
         // Process mech payment
+        IBalanceTracker(balanceTracker).adjustMechRequesterBalances(msg.sender, requester, deliveryRates, paymentData);
+
+        _locked = 1;
+    }
+
+    /// @dev Delivers signed requests with per-request price caps (cap-and-actual pricing).
+    /// @notice Overload of deliverMarketplaceWithSignatures: the requester signs a maximum rate and the mech
+    ///         charges the actual delivery rate, which must not exceed the signed cap.
+    /// @param requester Requester address.
+    /// @param deliverWithSignatures Set of DeliverWithSignature structs.
+    /// @param deliveryRates Actual charged delivery rate for each request (must be <= the signed cap).
+    /// @param maxRates Signed cap for each request.
+    /// @param paymentData Additional payment-related request data, if applicable.
+    function deliverMarketplaceWithSignatures(
+        address requester,
+        DeliverWithSignature[] calldata deliverWithSignatures,
+        uint256[] calldata deliveryRates,
+        uint256[] calldata maxRates,
+        bytes calldata paymentData
+    ) external {
+        // Reentrancy guard
+        if (_locked == 2) {
+            revert ReentrancyGuard();
+        }
+        _locked = 2;
+
+        // Array length checks
+        uint256 numRequests = deliverWithSignatures.length;
+        if (numRequests == 0 || numRequests != deliveryRates.length) {
+            revert WrongArrayLength(numRequests, deliveryRates.length);
+        }
+        // Check maxRates separately so a mismatch reports the offending array's length
+        if (numRequests != maxRates.length) {
+            revert WrongArrayLength(numRequests, maxRates.length);
+        }
+
+        // Payment type
+        bytes32 paymentType = IMech(msg.sender).paymentType();
+
+        // Process deliveries under the signed caps
+        _deliverMarketplaceWithSignatures(requester, paymentType, deliverWithSignatures, deliveryRates, maxRates);
+
+        // Get balance tracker address
+        address balanceTracker = mapPaymentTypeBalanceTrackers[paymentType];
+        // Check for zero address
+        if (balanceTracker == address(0)) {
+            revert ZeroAddress();
+        }
+
+        // Process mech payment at the actual delivery rates
         IBalanceTracker(balanceTracker).adjustMechRequesterBalances(msg.sender, requester, deliveryRates, paymentData);
 
         _locked = 1;
