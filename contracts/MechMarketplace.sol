@@ -1009,8 +1009,12 @@ contract MechMarketplace is IErrorsMarketplace {
 
         // Array length checks
         uint256 numRequests = deliverWithSignatures.length;
-        if (numRequests == 0 || numRequests != deliveryRates.length || numRequests != maxRates.length) {
+        if (numRequests == 0 || numRequests != deliveryRates.length) {
             revert WrongArrayLength(numRequests, deliveryRates.length);
+        }
+        // Check maxRates separately so a mismatch reports the offending array's length
+        if (numRequests != maxRates.length) {
+            revert WrongArrayLength(numRequests, maxRates.length);
         }
 
         // Payment type

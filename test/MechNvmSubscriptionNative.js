@@ -438,9 +438,23 @@ describe("MechNvmSubscriptionNative", function () {
                     deployer.address, deliverWithSignatures, overCap, maxRates, "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "RateOverCap");
 
+            // Mismatched maxRates length reverts (reporting the maxRates length)
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],bytes)"](
+                    deployer.address, deliverWithSignatures, deliveryRates, maxRates.slice(1), "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+
             // Successful delivery charging the actual (below-cap) rates
+            const mechBalanceBefore = await balanceTrackerNvmSubscriptionNative.mapMechBalances(priorityMech.address);
             await priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],bytes)"](
                 deployer.address, deliverWithSignatures, deliveryRates, maxRates, "0x");
+            const mechBalanceAfter = await balanceTrackerNvmSubscriptionNative.mapMechBalances(priorityMech.address);
+
+            // The mech is credited the sum of the ACTUAL delivery rates, not the signed caps
+            const sumDeliveryRates = deliveryRates.reduce((a, b) => a + b, 0);
+            const sumMaxRates = maxRates.reduce((a, b) => a + b, 0);
+            expect(mechBalanceAfter.sub(mechBalanceBefore)).to.equal(sumDeliveryRates);
+            expect(mechBalanceAfter.sub(mechBalanceBefore)).to.not.equal(sumMaxRates);
 
             // The recorded delivery rate is the actual charged rate, not the signed cap
             const requestInfo = await mechMarketplace.mapRequestIdInfos(requestIds[0]);
