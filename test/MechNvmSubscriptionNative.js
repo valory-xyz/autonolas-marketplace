@@ -535,23 +535,23 @@ describe("MechNvmSubscriptionNative", function () {
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
         });
 
-        it("Reports the offending array on a per-request-nonce length mismatch", async function () {
-            const dws = [{requestData: data, signature: "0x", deliveryData: data}];
-            // deliveryRates too short (maxRates and nonces match numRequests) -> must still revert WrongArrayLength
+        it("Reports the offending array's length on a per-request-nonce length mismatch", async function () {
+            const dws = [{requestData: data, signature: "0x", deliveryData: data}]; // numRequests = 1
+            // deliveryRates mismatched (length 2) -> reports deliveryRates.length
             await expect(
                 priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
-                    deployer.address, dws, [], [1], [1], "0x")
-            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
-            // maxRates too short
+                    deployer.address, dws, [1, 1], [1], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 2);
+            // maxRates mismatched (length 3) -> reports maxRates.length
             await expect(
                 priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
-                    deployer.address, dws, [1], [], [1], "0x")
-            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
-            // nonces too short
+                    deployer.address, dws, [1], [1, 1, 1], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 3);
+            // nonces mismatched (length 4) -> reports nonces.length
             await expect(
                 priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
-                    deployer.address, dws, [1], [1], [], "0x")
-            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+                    deployer.address, dws, [1], [1], [1, 1, 1, 1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 4);
         });
     });
 });
