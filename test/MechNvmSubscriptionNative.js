@@ -460,5 +460,98 @@ describe("MechNvmSubscriptionNative", function () {
             const requestInfo = await mechMarketplace.mapRequestIdInfos(requestIds[0]);
             expect(requestInfo.deliveryRate).to.equal(deliveryRates[0]);
         });
+
+        it("Requests with signatures and requester-chosen per-request nonces settle independently", async function () {
+            const numRequests = 4;
+            const maxRate = maxDeliveryRate;
+            const deliveryRate = maxDeliveryRate - 1;
+            // Requester-chosen, non-sequential nonces — independent of the on-chain counter
+            const nonces = [100, 7, 42, 999];
+
+            // Buy a subscription sized for the caps
+            await mockNvmSubscriptionNative.mint(subscriptionId, numRequests * maxDeliveryRate,
+                {value: numRequests * maxDeliveryRate * normalizedRatio});
+
+            // Get deployer wallet
+            const accounts = config.networks.hardhat.accounts;
+            const wallet = ethers.Wallet.fromMnemonic(accounts.mnemonic, accounts.path + `/${0}`);
+            const signingKey = new ethers.utils.SigningKey(wallet.privateKey);
+
+            // Build and sign each request over its own requester-chosen nonce and cap
+            const items = [];
+            for (let i = 0; i < numRequests; i++) {
+                const requestData = data + "00".repeat(i + 1);
+                const requestId = await mechMarketplace.getRequestIdWithNonce(priorityMech.address, deployer.address,
+                    requestData, maxRate, paymentType, nonces[i]);
+                const signature = signingKey.signDigest(requestId);
+                const sig = ethers.utils.hexlify(ethers.utils.concat([
+                    ethers.utils.arrayify(signature.r), ethers.utils.arrayify(signature.s),
+                    ethers.utils.arrayify(signature.v)]));
+                items.push({requestId, dws: {requestData, signature: sig, deliveryData: requestData}});
+            }
+
+            const settle = (idxs) => priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                deployer.address, idxs.map((i) => items[i].dws), idxs.map(() => deliveryRate),
+                idxs.map(() => maxRate), idxs.map((i) => nonces[i]), "0x");
+
+            // Settle in two independent transactions, out of order — neither set invalidates the other
+            await settle([2, 0]);
+            await settle([3, 1]);
+
+            // Each recorded the actual (below-cap) rate
+            const info = await mechMarketplace.mapRequestIdInfos(items[0].requestId);
+            expect(info.deliveryRate).to.equal(deliveryRate);
+
+            // Replay of an already-settled request is rejected
+            await expect(settle([0])).to.be.revertedWithCustomError(mechMarketplace, "AlreadyRequested");
+        });
+
+        it("A sequential-path signature cannot settle on the per-request-nonce path (domain separation)", async function () {
+            const maxRate = maxDeliveryRate;
+            const deliveryRate = maxDeliveryRate - 1;
+            const nonce = 5;
+            const requestData = data + "cc";
+
+            await mockNvmSubscriptionNative.mint(subscriptionId, maxDeliveryRate,
+                {value: maxDeliveryRate * normalizedRatio});
+
+            const accounts = config.networks.hardhat.accounts;
+            const wallet = ethers.Wallet.fromMnemonic(accounts.mnemonic, accounts.path + `/${0}`);
+            const signingKey = new ethers.utils.SigningKey(wallet.privateKey);
+
+            // Sign over the SEQUENTIAL-path request Id (getRequestId), not the domain-separated one
+            const seqRequestId = await mechMarketplace.getRequestId(priorityMech.address, deployer.address,
+                requestData, maxRate, paymentType, nonce);
+            const signature = signingKey.signDigest(seqRequestId);
+            const sig = ethers.utils.hexlify(ethers.utils.concat([
+                ethers.utils.arrayify(signature.r), ethers.utils.arrayify(signature.s),
+                ethers.utils.arrayify(signature.v)]));
+            const dws = [{requestData, signature: sig, deliveryData: requestData}];
+
+            // Submitting it on the per-request-nonce path recomputes a domain-separated Id, so the signature fails
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [deliveryRate], [maxRate], [nonce], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
+        });
+
+        it("Reports the offending array's length on a per-request-nonce length mismatch", async function () {
+            const dws = [{requestData: data, signature: "0x", deliveryData: data}]; // numRequests = 1
+            // deliveryRates mismatched (length 2) -> reports deliveryRates.length
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [1, 1], [1], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 2);
+            // maxRates mismatched (length 3) -> reports maxRates.length
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [1], [1, 1, 1], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 3);
+            // nonces mismatched (length 4) -> reports nonces.length
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [1], [1], [1, 1, 1, 1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength").withArgs(1, 4);
+        });
     });
 });
