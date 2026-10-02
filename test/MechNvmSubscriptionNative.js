@@ -481,7 +481,7 @@ describe("MechNvmSubscriptionNative", function () {
             const items = [];
             for (let i = 0; i < numRequests; i++) {
                 const requestData = data + "00".repeat(i + 1);
-                const requestId = await mechMarketplace.getRequestId(priorityMech.address, deployer.address,
+                const requestId = await mechMarketplace.getRequestIdWithNonce(priorityMech.address, deployer.address,
                     requestData, maxRate, paymentType, nonces[i]);
                 const signature = signingKey.signDigest(requestId);
                 const sig = ethers.utils.hexlify(ethers.utils.concat([
@@ -504,6 +504,35 @@ describe("MechNvmSubscriptionNative", function () {
 
             // Replay of an already-settled request is rejected
             await expect(settle([0])).to.be.revertedWithCustomError(mechMarketplace, "AlreadyRequested");
+        });
+
+        it("A sequential-path signature cannot settle on the per-request-nonce path (domain separation)", async function () {
+            const maxRate = maxDeliveryRate;
+            const deliveryRate = maxDeliveryRate - 1;
+            const nonce = 5;
+            const requestData = data + "cc";
+
+            await mockNvmSubscriptionNative.mint(subscriptionId, maxDeliveryRate,
+                {value: maxDeliveryRate * normalizedRatio});
+
+            const accounts = config.networks.hardhat.accounts;
+            const wallet = ethers.Wallet.fromMnemonic(accounts.mnemonic, accounts.path + `/${0}`);
+            const signingKey = new ethers.utils.SigningKey(wallet.privateKey);
+
+            // Sign over the SEQUENTIAL-path request Id (getRequestId), not the domain-separated one
+            const seqRequestId = await mechMarketplace.getRequestId(priorityMech.address, deployer.address,
+                requestData, maxRate, paymentType, nonce);
+            const signature = signingKey.signDigest(seqRequestId);
+            const sig = ethers.utils.hexlify(ethers.utils.concat([
+                ethers.utils.arrayify(signature.r), ethers.utils.arrayify(signature.s),
+                ethers.utils.arrayify(signature.v)]));
+            const dws = [{requestData, signature: sig, deliveryData: requestData}];
+
+            // Submitting it on the per-request-nonce path recomputes a domain-separated Id, so the signature fails
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [deliveryRate], [maxRate], [nonce], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
         });
     });
 });
