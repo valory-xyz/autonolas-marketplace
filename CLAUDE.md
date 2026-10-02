@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Autonolas Marketplace — Solidity smart contracts for a decentralized mech (AI agent) marketplace. Mechs register, requesters post jobs with payment, and services deliver responses. Supports multiple payment models (native currency, ERC20 tokens, Nevermined subscriptions) across 7+ EVM chains.
+Autonolas Marketplace — Solidity smart contracts for a decentralized mech (AI agent) marketplace. Mechs register, requesters post jobs with payment, and services deliver responses. Supports multiple payment models (native currency, ERC20 tokens; Nevermined subscriptions are deprecated) across 7+ EVM chains.
 
 ## Build & Development Commands
 
@@ -48,15 +48,15 @@ npx hardhat coverage
 
 **OlasMech** (abstract) extends Gnosis Mech base. Each mech is tied to an Olas service registry entry and verified via multisig operators. Tracks request/delivery counts and enforces max delivery rates.
 
-**Three payment model branches**, each with their own Mech + Factory + BalanceTracker:
+**Payment model branches**, each with their own Mech + Factory + BalanceTracker:
 
 | Model | Mech | Factory | BalanceTracker |
 |-------|------|---------|----------------|
 | Fixed Price Native | `MechFixedPriceNative` | `MechFactoryFixedPriceNative` | `BalanceTrackerFixedPriceNative` |
 | Fixed Price Token | `MechFixedPriceToken` | `MechFactoryFixedPriceToken` | `BalanceTrackerFixedPriceToken` |
-| Nevermined Subscription | `MechNvmSubscription{Native,Token}` | `MechFactoryNvmSubscription{Native,Token}` | `BalanceTrackerNvmSubscription{Native,Token}` |
+| Nevermined Subscription *(deprecated)* | `MechNvmSubscription{Native,Token}` | `MechFactoryNvmSubscription{Native,Token}` | `BalanceTrackerNvmSubscription{Native,Token}` |
 
-Chain-specific variants exist under `mechs/native/celo/`, `mechs/token/usdc/`, and `nevermined/token/usdc/`.
+Chain-specific variants exist under `mechs/native/celo/` and `mechs/token/usdc/`. The Nevermined set is deprecated and lives in `contracts/deprecated/nevermined/` (including `token/usdc/`) as the source of record for its deployments.
 
 **Two candidate payment families being considered for a fourth payment model**, both for HTTP-native paid API access. The decision guide at `docs/x402_vs_mpp.md` frames the choice:
 
