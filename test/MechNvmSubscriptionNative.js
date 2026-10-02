@@ -534,5 +534,24 @@ describe("MechNvmSubscriptionNative", function () {
                     deployer.address, dws, [deliveryRate], [maxRate], [nonce], "0x")
             ).to.be.revertedWithCustomError(mechMarketplace, "SignatureNotValidated");
         });
+
+        it("Reports the offending array on a per-request-nonce length mismatch", async function () {
+            const dws = [{requestData: data, signature: "0x", deliveryData: data}];
+            // deliveryRates too short (maxRates and nonces match numRequests) -> must still revert WrongArrayLength
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [], [1], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+            // maxRates too short
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [1], [], [1], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+            // nonces too short
+            await expect(
+                priorityMech["deliverMarketplaceWithSignatures(address,(bytes,bytes,bytes)[],uint256[],uint256[],uint256[],bytes)"](
+                    deployer.address, dws, [1], [1], [], "0x")
+            ).to.be.revertedWithCustomError(mechMarketplace, "WrongArrayLength");
+        });
     });
 });

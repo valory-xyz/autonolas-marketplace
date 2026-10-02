@@ -1157,10 +1157,15 @@ contract MechMarketplace is IErrorsMarketplace {
         }
         _locked = 2;
 
-        // Array length checks
+        // Array length checks — split so a mismatch reports the offending array's length
         uint256 numRequests = deliverWithSignatures.length;
-        if (numRequests == 0 || numRequests != deliveryRates.length || numRequests != maxRates.length
-            || numRequests != nonces.length) {
+        if (numRequests == 0 || numRequests != deliveryRates.length) {
+            revert WrongArrayLength(numRequests, deliveryRates.length);
+        }
+        if (numRequests != maxRates.length) {
+            revert WrongArrayLength(numRequests, maxRates.length);
+        }
+        if (numRequests != nonces.length) {
             revert WrongArrayLength(numRequests, nonces.length);
         }
 
