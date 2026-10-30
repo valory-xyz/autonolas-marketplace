@@ -49,7 +49,8 @@ implementation and factories; governance executes the proxy upgrade and factory 
 2. Deploy a new factory for each approved payment type using `deploy_05_mech_factory_fixed_price_native.sh`,
    `deploy_07a_mech_factory_fixed_price_token_olas.sh` and/or `deploy_07b_mech_factory_fixed_price_token_usdc.sh`,
    each with `<network>`. Factories embed mech bytecode, so upgrading Marketplace alone does not
-   update the mechs they create. Existing deployed mechs are unchanged.
+   update the mechs they create. Existing deployed mechs are unchanged. Run the candidate audits below
+   after deployment and before submitting governance; require successful explorer verification when configured.
 3. Use the network's governance procedure to execute `changeImplementation(newImplementation)`
    on the existing proxy. Before execution, run the read-only implementation check below against
    the exact address in the proposal. After execution, confirm the implementation, version, retained governance
@@ -65,7 +66,8 @@ implementation and factories; governance executes the proxy upgrade and factory 
 For every governance operation, verify the chain, existing proxy target, zero value, arguments,
 successful execution and the state readbacks above. Governance calldata preparation, proposal submission
 and execution use the network's established process; no governance automation is provided here.
-Retiring old factories is a separate governance decision.
+Include explicitly approved old-factory revocations in the governance payload when replacing factories;
+the direct-owner registration helper only enables the selected factories.
 
 From the reviewed checkout, run this check before submitting the proposal and again before execution:
 
@@ -79,6 +81,45 @@ This command builds the current source, compares implementation runtime bytecode
 immutable slots, and checks version `1.2.0`, registry and Karma against the proxy, and constructor chain ID
 against the target network. It requires no wallet and sends no transactions. A mismatch stops the check.
 The deployment and direct-owner upgrade scripts use the same checker.
+
+### Read-only candidate and activation audits
+
+The chain audit also accepts new implementation/native/USDC factory addresses directly from globals,
+independently of the active addresses in `docs/configuration.json`. Use artifacts from the reviewed build
+used to deploy those addresses (Forge or Hardhat format). Keep the previous factory addresses recorded above.
+From the repository root, for example:
+
+```sh
+export MARKETPLACE_RPC_URL='<target network RPC URL>'
+node scripts/audit_chains/audit_contracts_setup.js --candidate MechMarketplace \
+  --globals scripts/deployment/globals_eth_mainnet.json --artifact out/MechMarketplace.sol/MechMarketplace.json
+node scripts/audit_chains/audit_contracts_setup.js --candidate MechFactoryFixedPriceNative \
+  --globals scripts/deployment/globals_eth_mainnet.json --artifact out/MechFactoryFixedPriceNative.sol/MechFactoryFixedPriceNative.json \
+  --previous-factory '<previous native factory address>'
+node scripts/audit_chains/audit_contracts_setup.js --candidate MechFactoryFixedPriceTokenUSDC \
+  --globals scripts/deployment/globals_eth_mainnet.json --artifact out/MechFactoryFixedPriceTokenUSDC.sol/MechFactoryFixedPriceTokenUSDC.json \
+  --previous-factory '<previous USDC factory address>'
+```
+
+Substitute the network's globals file and run only the selected factory types. These commands send no
+transactions. They compare full runtime bytecode, constructor bindings and implementation version/chain ID
+at one recorded block per invocation. Invalid inputs or the wrong RPC chain stop early; other failed or
+unreadable checks are reported on separate lines, followed by a nonzero exit after all checks run.
+
+| Check | What we will see before governance | Expected (after governance) |
+|---|---|---|
+| Proxy implementation / version | Old address / `1.1.0`: reported as mismatches against the new address / `1.2.0` | New address / `1.2.0` |
+| Replacement factory permissions | New `false`, previous `true` | New `true`, previous `false` |
+
+Before governance, only those proxy implementation/version differences are expected in the candidate
+audit; all candidate code/binding checks must pass. After governance, repeat the implementation command
+and add `--activated` to each factory command to check the reversed permissions. The flag performs no
+activation. Missing or identical previous-factory addresses are rejected.
+
+Continue running the existing chain state audit (`node scripts/audit_chains/audit_contracts_setup.js`)
+for owners, settings, Karma authorization and tracker/drainer bindings. Its factory checks expect the new
+factories in globals to be enabled, so they report differences before governance. Retain the applicable
+OLAS-disabled policy. Candidate audits supplement these existing state checks.
 
 After the governance upgrade, check the new explicit-nonce domain on the existing proxy:
 

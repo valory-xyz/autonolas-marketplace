@@ -120,7 +120,31 @@ async function main() {
         const checkImplementation = () => execute("python3", [path.join(deployment, "check_marketplace_implementation.py"),
             "--implementation", implementation.address, "--proxy", proxy.address, "--chain-id", "31337"],
         {env: {...cleanEnv, MARKETPLACE_RPC_URL: config.networkURL}, cwd: temporary, timeout: 180000});
+        const audit = async (name, previous, activated = false, expectedFailures = []) => {
+            const args = [path.join(root, "scripts/audit_chains/audit_contracts_setup.js"), "--candidate", name,
+                "--globals", globals, "--artifact", path.join(temporary, "out", name + ".sol", name + ".json")];
+            if (previous) args.push("--previous-factory", previous);
+            if (activated) args.push("--activated");
+            let error;
+            try {
+                await execute(process.execPath, args,
+                    {env: {...cleanEnv, MARKETPLACE_RPC_URL: config.networkURL}, cwd: root, timeout: 30000});
+            } catch (caught) { error = caught; }
+            if (expectedFailures.length) {
+                check(name + " audit reports " + expectedFailures.join(", "), error &&
+                    expectedFailures.every(text => error.stderr.includes(text)));
+            } else {
+                if (error) throw error;
+                check(name + " audit passes " + (activated ? "after" : "before") + " factory activation", true);
+            }
+        };
         const beforeCheck = await owner.getTransactionCount("latest");
+        await audit("MechMarketplace", undefined, false,
+            ["AUDIT FAILED: 2 checks: proxy implementation, proxy VERSION()", "expected=", "observed="]);
+        const validChain = config.chainId;
+        config.chainId = "1"; save();
+        await audit("MechMarketplace", undefined, false, ["RPC chainId versus globals.chainId"]);
+        config.chainId = validChain; save();
         await checkImplementation();
         check("governance implementation check works without a signing key or transaction",
             await owner.getTransactionCount("latest") === beforeCheck);
@@ -135,6 +159,8 @@ async function main() {
             try { await checkImplementation(); } catch (caught) { error = caught; }
             check("governance check rejects different code with identical getters",
                 error && error.stderr.includes("Implementation does not match the current build"));
+            await audit("MechMarketplace", undefined, false,
+                ["AUDIT FAILED: 3 checks: runtime hash, proxy implementation, proxy VERSION()"]);
             await reject("upgrade rejects different code before sending", "script_06_change_implementaion_mech_marketplace_proxy.sh",
                 [], "Implementation does not match the current build");
         } finally {
@@ -144,11 +170,19 @@ async function main() {
             const wrong = await deploy("MechMarketplace", dependency === "registry" ? assets[0].address : registry.address,
                 dependency === "karma" ? assets[0].address : karma.address);
             config.mechMarketplaceAddress = wrong.address; save();
+            await audit("MechMarketplace", undefined, false,
+                ["runtime hash", dependency === "registry" ? "serviceRegistry()" : "karma()", "proxy implementation"]);
             await reject("upgrade rejects a wrong " + dependency, "script_06_change_implementaion_mech_marketplace_proxy.sh",
                 [], "Implementation dependencies differ");
         }
         config.mechMarketplaceAddress = implementation.address; save();
         await run("script_06_change_implementaion_mech_marketplace_proxy.sh");
+        await audit("MechMarketplace");
+        const validImplementation = config.mechMarketplaceAddress;
+        config.mechMarketplaceAddress = requester.address; save();
+        await audit("MechMarketplace", undefined, false,
+            ["AUDIT FAILED: 6 checks:", "check unavailable", "proxy implementation"]);
+        config.mechMarketplaceAddress = validImplementation; save();
         check("upgrade retains the proxy, owner and legacy domain", await proxy.getImplementation() === implementation.address &&
             await marketplace.owner() === owner.address && await marketplace.getDomainSeparator() === legacyDomain);
         check("upgrade retains fee and response timeouts", (await marketplace.fee()).eq(100) &&
@@ -182,6 +216,45 @@ async function main() {
         await run("deploy_05_mech_factory_fixed_price_native.sh");
         await run("deploy_07a_mech_factory_fixed_price_token_olas.sh");
         await run("deploy_07b_mech_factory_fixed_price_token_usdc.sh");
+        // Independently audit both replacement types before and after their permission changes.
+        const oldUSDCFactory = await deploy("MechFactoryFixedPriceTokenUSDC", proxy.address);
+        await (await marketplace.setMechFactoryStatuses([oldUSDCFactory.address], [true])).wait();
+        const replacementTypes = ["MechFactoryFixedPriceNative", "MechFactoryFixedPriceTokenUSDC"];
+        const oldFactories = [oldFactory.address, oldUSDCFactory.address];
+        const replacementAddresses = [config.mechFactoryFixedPriceNativeAddress, config.mechFactoryFixedPriceTokenUSDCAddress];
+        const auditNonce = await owner.getTransactionCount("latest");
+        for (let i = 0; i < replacementTypes.length; i++) {
+            await audit(replacementTypes[i], oldFactories[i]);
+            await audit(replacementTypes[i], oldFactories[i], true,
+                ["AUDIT FAILED: 2 checks: new factory permission, previous factory permission"]);
+        }
+        check("candidate audits send no transactions", await owner.getTransactionCount("latest") === auditNonce);
+        await audit(replacementTypes[0], undefined, false, ["--previous-factory must be a nonzero address"]);
+        await audit(replacementTypes[0], replacementAddresses[0], false, ["--previous-factory must differ"]);
+        const nativeCode = await provider.getCode(replacementAddresses[0]);
+        try {
+            // Change embedded mech creation code, retaining the factory getter, length and outer metadata.
+            const mechArtifact = JSON.parse(fs.readFileSync(path.join(temporary, "out/MechFixedPriceNative.sol/MechFixedPriceNative.json"), "utf8"));
+            const offset = nativeCode.indexOf(mechArtifact.bytecode.object.replace(/^0x/, ""));
+            assert(offset > 2, "Factory must embed the reviewed mech creation code");
+            const changed = nativeCode.slice(0, offset) + "fe" + nativeCode.slice(offset + 2);
+            await provider.send("anvil_setCode", [replacementAddresses[0], changed]);
+            await audit(replacementTypes[0], oldFactories[0], false, ["AUDIT FAILED: 1 checks: runtime hash"]);
+        } finally {
+            await provider.send("anvil_setCode", [replacementAddresses[0], nativeCode]);
+        }
+        const wrongBindingFactory = await deploy("MechFactoryFixedPriceNative", requester.address);
+        config.mechFactoryFixedPriceNativeAddress = wrongBindingFactory.address; save();
+        await audit(replacementTypes[0], oldFactories[0], false, ["runtime hash", "mechMarketplace()"]);
+        config.mechFactoryFixedPriceNativeAddress = replacementAddresses[1]; save();
+        await audit(replacementTypes[0], oldFactories[0], false, ["AUDIT FAILED: 1 checks: runtime hash"]);
+        config.mechFactoryFixedPriceNativeAddress = replacementAddresses[0]; save();
+        await (await marketplace.setMechFactoryStatuses(replacementAddresses, [true, true])).wait();
+        await audit(replacementTypes[0], oldFactories[0], true, ["AUDIT FAILED: 1 checks: previous factory permission"]);
+        await (await marketplace.setMechFactoryStatuses(oldFactories, [false, false])).wait();
+        for (let i = 0; i < replacementTypes.length; i++) await audit(replacementTypes[i], oldFactories[i], true);
+        // Restore the pre-registration fixture for the existing deployment-script tests below.
+        await (await marketplace.setMechFactoryStatuses([...replacementAddresses, ...oldFactories], [false, false, true, true])).wait();
         const full = {...config};
         const register = "script_02a_marketplace_set_factories_fixed.sh";
         config.mechFactoryFixedPriceNativeAddress = oldFactory.address; save();
