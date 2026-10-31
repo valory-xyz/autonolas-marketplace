@@ -451,6 +451,108 @@ async function checkSubscriptionProvider(chainId, provider, globalsInstance, con
     customExpect(escrowPaymentCondition, globalsInstance["escrowPaymentConditionAddress"], log + ", function: escrowPaymentCondition()");
 }
 
+// Check deployments independently of the active addresses in configuration.json. These constructors
+// depend only on arguments and chain ID; eth_call reconstructs their full runtime, including immutables.
+async function checkDeploymentCandidate(provider, globals, contractName, artifact, activated = false, previousFactory) {
+    const bindings = {
+        MechMarketplace: ["mechMarketplaceAddress", ["serviceRegistryAddress", "karmaProxyAddress"], ["serviceRegistry", "karma"]],
+        MechFactoryFixedPriceNative: ["mechFactoryFixedPriceNativeAddress", ["mechMarketplaceProxyAddress"], ["mechMarketplace"]],
+        MechFactoryFixedPriceTokenUSDC: ["mechFactoryFixedPriceTokenUSDCAddress", ["mechMarketplaceProxyAddress"], ["mechMarketplace"]]
+    };
+    if (!bindings[contractName]) throw new Error("Unsupported candidate: " + contractName);
+    const nonzero = (value, label) => {
+        if (!ethers.utils.isAddress(value) || norm(value) === ethers.constants.AddressZero) {
+            throw new Error(label + " must be a nonzero address");
+        }
+        return norm(value);
+    };
+    const [addressKey, argumentKeys, getters] = bindings[contractName];
+    const address = nonzero(globals[addressKey], addressKey);
+    const args = argumentKeys.map(key => nonzero(globals[key], key));
+    const proxyAddress = nonzero(globals.mechMarketplaceProxyAddress, "mechMarketplaceProxyAddress");
+    const isMarketplace = contractName === "MechMarketplace";
+    let old;
+    if (!isMarketplace) {
+        old = nonzero(previousFactory, "--previous-factory");
+        if (old === address) throw new Error("--previous-factory must differ from the new factory");
+    }
+    const network = await provider.getNetwork();
+    expect(network.chainId, "RPC chainId versus globals.chainId").to.equal(Number(globals.chainId));
+    const blockTag = await provider.getBlockNumber();
+    const tag = "ChainId: " + network.chainId + ", block: " + blockTag + ", candidate: " + contractName + " " + address;
+    console.log(tag);
+    const failures = [];
+    async function check(label, readAndCompare) {
+        try {
+            await readAndCompare();
+        } catch (error) {
+            failures.push(label);
+            const detail = error.name === "AssertionError"
+                ? "expected=" + error.expected + ", observed=" + error.actual
+                : "check unavailable (" + (error.code || error.name) + ")";
+            console.error(tag + ", FAIL: " + label + ": " + detail);
+        }
+    }
+    await check("runtime hash", async () => {
+        const bytecode = typeof artifact.bytecode === "string" ? artifact.bytecode : artifact.bytecode.object;
+        const factory = new ethers.ContractFactory(artifact.abi, bytecode);
+        const expectedCode = await provider.call(factory.getDeployTransaction(...args), blockTag);
+        if (expectedCode === "0x") throw new Error("Candidate creation simulation returned empty runtime code");
+        const observedCode = await provider.getCode(address, blockTag);
+        console.log("Reviewed runtime hash: " + ethers.utils.keccak256(expectedCode));
+        expect(ethers.utils.keccak256(observedCode)).to.equal(ethers.utils.keccak256(expectedCode));
+    });
+    const candidate = new ethers.Contract(address, artifact.abi, provider);
+    for (let i = 0; i < getters.length; i++) {
+        await check(getters[i] + "()", async () => {
+            expect(norm(await candidate[getters[i]]({ blockTag }))).to.equal(args[i]);
+        });
+    }
+    const proxy = new ethers.Contract(proxyAddress, [
+        "function getImplementation() view returns (address)", "function VERSION() view returns (string)",
+        "function mapMechFactories(address) view returns (bool)"
+    ], provider);
+    if (isMarketplace) {
+        await check("VERSION()", async () => {
+            expect(await candidate.VERSION({ blockTag })).to.equal("1.2.0");
+        });
+        await check("chainId()", async () => {
+            expect((await candidate.chainId({ blockTag })).toString()).to.equal(String(network.chainId));
+        });
+        await check("proxy implementation", async () => {
+            const implementation = norm(await proxy.getImplementation({ blockTag }));
+            console.log("Expected implementation: " + address);
+            console.log("Actual implementation: " + implementation);
+            expect(implementation).to.equal(address);
+        });
+        await check("proxy VERSION()", async () => {
+            expect(await proxy.VERSION({ blockTag })).to.equal("1.2.0");
+        });
+    } else {
+        await check("new factory permission", async () => {
+            expect(await proxy.mapMechFactories(address, { blockTag })).to.equal(activated);
+        });
+        await check("previous factory permission", async () => {
+            expect(await proxy.mapMechFactories(old, { blockTag })).to.equal(!activated);
+        });
+    }
+    if (failures.length) throw new Error("AUDIT FAILED: " + failures.length + " checks: " + failures.join(", "));
+    console.log("PASS: all requested candidate and state checks");
+}
+
+async function auditCandidateFromArguments() {
+    const args = process.argv.slice(2);
+    const value = flag => args[args.indexOf(flag) + 1];
+    if (!["--candidate", "--globals", "--artifact"].every(flag => args.includes(flag) && value(flag) && !value(flag).startsWith("--"))
+        || !process.env.MARKETPLACE_RPC_URL) {
+        throw new Error("Required: --candidate <MechMarketplace|MechFactoryFixedPriceNative|MechFactoryFixedPriceTokenUSDC> --globals <file> --artifact <file> and MARKETPLACE_RPC_URL");
+    }
+    await checkDeploymentCandidate(new ethers.providers.JsonRpcProvider(process.env.MARKETPLACE_RPC_URL),
+        JSON.parse(fs.readFileSync(value("--globals"), "utf8")), value("--candidate"),
+        JSON.parse(fs.readFileSync(value("--artifact"), "utf8")), args.includes("--activated"),
+        args.includes("--previous-factory") ? value("--previous-factory") : undefined);
+}
+
 async function main() {
     // Read configuration from the JSON file
     const configFile = "docs/configuration.json";
@@ -567,15 +669,19 @@ async function main() {
     }
 }
 
-main()
-    .then(() => {
-        if (bytecodeMismatchFound) {
-            console.error("AUDIT FAILED: at least one on-chain bytecode length mismatch (Tier 1) — see FAIL lines above.");
+if (require.main === module) {
+    const candidateMode = process.argv.includes("--candidate");
+    (candidateMode ? auditCandidateFromArguments() : main())
+        .then(() => {
+            if (bytecodeMismatchFound) {
+                console.error("AUDIT FAILED: at least one on-chain bytecode length mismatch (Tier 1) — see FAIL lines above.");
+                process.exit(1);
+            }
+            process.exit(0);
+        })
+        .catch((error) => {
+            // Provider errors may contain credential-bearing RPC URLs; do not print them in candidate mode.
+            console.error(candidateMode ? (error.code || error.message) : error);
             process.exit(1);
-        }
-        process.exit(0);
-    })
-    .catch((error) => {
-        console.error(error);
-        process.exit(1);
-    });
+        });
+}
