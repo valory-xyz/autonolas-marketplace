@@ -47,9 +47,9 @@ abstract contract MarketplaceDomainTestBase {
     }
 
     function _legacy(address registry, address karma) internal returns (address) {
-        // The checked-in deployment artifact contains the original implementation and cache guard.
-        // Its legacy signed-delivery entrypoint is sufficient to reproduce both signature directions.
-        string memory artifact = vm.readFile("abis/0.8.30/MechMarketplace.json");
+        // Pinned legacy (1.1.0) implementation fixture; its legacy signed-delivery entrypoint is
+        // sufficient to reproduce both signature directions for the backward-compatibility regression.
+        string memory artifact = vm.readFile("test/fixtures/MechMarketplace_1.1.0.json");
         return _deploy(vm.parseJsonBytes(artifact, ".bytecode.object"), abi.encode(registry, karma));
     }
 
