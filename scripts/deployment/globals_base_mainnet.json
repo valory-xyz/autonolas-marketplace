@@ -22,11 +22,11 @@
   "mechFactoryNvmSubscriptionTokenUSDCAddress": "0x7beD01f8482fF686F025628e7780ca6C1f0559fc",
   "balanceTrackerNvmSubscriptionTokenUSDCAddress": "0xaaFBeef195BDAb1Bb6f3Dc9cEbA875Cd72499230",
   "subscriptionTokenId": "",
-  "mechMarketplaceAddress": "0x155547857680A6D51bebC5603397488988DEb1c8",
+  "mechMarketplaceAddress": "0xE8712Eb720345A6eC07eC85016e367104c1524BB",
   "mechMarketplaceProxyAddress": "0xf24eE42edA0fc9b33B7D41B06Ee8ccD2Ef7C5020",
   "mechFactoryNvmSubscriptionNativeAddress": "0x847bBE8b474e0820215f818858e23F5f5591855A",
   "balanceTrackerNvmSubscriptionNativeAddress": "0x3d79737f05966c5925a04d1b04110006F5a072bE",
-  "mechFactoryFixedPriceNativeAddress": "0x2E008211f34b25A7d7c102403c6C2C3B665a1abe",
+  "mechFactoryFixedPriceNativeAddress": "0xf8a8C985f46Ab6204e6A40845e73a6119f0458ED",
   "balanceTrackerFixedPriceNativeAddress": "0xB3921F8D8215603f0Bd521341Ac45eA8f2d274c1",
   "mechFactoryFixedPriceTokenOLASAddress": "0x97371B1C0cDA1D04dFc43DFb50a04645b7Bc9BEe",
   "balanceTrackerFixedPriceTokenOLASAddress": "0x43fB32f25dce34EB76c78C7A42C8F40F84BCD237",
@@ -36,6 +36,6 @@
   "transferNFTConditionAddress": "0x17a49d0942b987ebDE9D6400A045159bd3936541",
   "escrowPaymentConditionAddress": "0xA33f6149563CfEC51C9e7961A3FB5DdF5F9D5B68",
   "subscriptionProviderAddress": "0x5050c577583D25Ff9C9492A39e8D1B94028ffA55",
-  "mechFactoryFixedPriceTokenUSDCAddress": "0x5B70A66fe68c4c86FFd724B58cc56049c70e9D3D",
+  "mechFactoryFixedPriceTokenUSDCAddress": "0x17D8B863F6c4601d67A87FDa04D53849c5F9Ce00",
   "balanceTrackerFixedPriceTokenUSDCAddress": "0x0443C55e151dBA13fae079518F9dd01ff9c21CB2"
 }

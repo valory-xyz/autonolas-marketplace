@@ -35,12 +35,12 @@
   "maxResponseTimeout": "300",
   "karmaAddress": "0x8Bb87107CDAdE4cD7f470DC90CD58Ba1595B1D64",
   "karmaProxyAddress": "0x02C26437B292D86c5F4F21bbCcE0771948274f84",
-  "mechMarketplaceAddress": "0x1a0bFCC27051BCcDDc444578f56A4F5920e0E083",
+  "mechMarketplaceAddress": "0x5C50ebc17d002A4484585C8fbf62f51953493c0B",
   "mechMarketplaceProxyAddress": "0x17d96ba4532fe91809326092fE4D5606A7B7a0d8",
-  "mechFactoryFixedPriceNativeAddress": "0xDd1252c5a75be568B5E6e50bA542680b38dbd68f",
+  "mechFactoryFixedPriceNativeAddress": "0x0a9a74274b1C30845aF98683Ca7F843795f6DFA6",
   "balanceTrackerFixedPriceNativeAddress": "0x2E008211f34b25A7d7c102403c6C2C3B665a1abe",
   "mechFactoryFixedPriceTokenOLASAddress": "0xA123748Ce7609F507060F947b70298D0bde621E6",
-  "mechFactoryFixedPriceTokenUSDCAddress": "0xE3e5Df46060370af5Fd37B2aA11e7dac3cCB4bd0",
+  "mechFactoryFixedPriceTokenUSDCAddress": "0x16184FcF1940dFb8aA5Eba7E1effefAd49c733F5",
   "balanceTrackerFixedPriceTokenOLASAddress": "0xB3921F8D8215603f0Bd521341Ac45eA8f2d274c1",
   "balanceTrackerFixedPriceTokenUSDCAddress": "0x97371B1C0cDA1D04dFc43DFb50a04645b7Bc9BEe"
 }
