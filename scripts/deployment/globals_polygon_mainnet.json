@@ -34,9 +34,9 @@
   "wrappedNativeTokenAddress": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
   "karmaAddress": "0x7fc0ddf4DFB61CfA5519db2A5eE7B2Eb02De0140",
   "karmaProxyAddress": "0xe625410Cb7C8Ce842c6E23e348B94bD125B211E5",
-  "mechMarketplaceAddress": "0xE85791B18F5df42163092Acc5C9da1c479AFEa9d",
+  "mechMarketplaceAddress": "0x67722c823010CEb4BED5325fE109196C0f67D053",
   "mechMarketplaceProxyAddress": "0x343F2B005cF6D70bA610CD9F1F1927049414B582",
-  "mechFactoryFixedPriceNativeAddress": "0x87f89F94033305791B6269AE2F9cF4e09983E56e",
+  "mechFactoryFixedPriceNativeAddress": "0x40dABcF2DEEc7241749B320cbC5ca69544a90d68",
   "balanceTrackerFixedPriceNativeAddress": "0xc096362fa6f4A4B1a9ea68b1043416f3381ce300",
   "mechFactoryFixedPriceTokenOLASAddress": "0xa0DA53447C0f6C4987964d8463da7e6628B30f82",
   "balanceTrackerFixedPriceTokenOLASAddress": "0x1521918961bDBC9Ed4C67a7103D5999e4130E6CB",
@@ -49,6 +49,6 @@
   "mechFactoryNvmSubscriptionTokenUSDCAddress": "0x43fB32f25dce34EB76c78C7A42C8F40F84BCD237",
   "balanceTrackerNvmSubscriptionTokenUSDCAddress": "0xd00Cb760Bf30183EAFE67f0E590BEeE190F35Cf3",
   "subscriptionTokenIdUSDC": "0x48622628a92e627e9c16c4057f776b7e6a3861e4b8943710bab93467b6690e6a",
-  "mechFactoryFixedPriceTokenUSDCAddress": "0x85899f9d8C058A5BBBaF344ea0f0b63c0CcBe851",
+  "mechFactoryFixedPriceTokenUSDCAddress": "0x749cdf4bF2e55269b3d1bC4b4408e34689c96B67",
   "balanceTrackerFixedPriceTokenUSDCAddress": "0x5C50ebc17d002A4484585C8fbf62f51953493c0B"
 }
