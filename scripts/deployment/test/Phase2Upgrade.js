@@ -82,7 +82,7 @@ async function main() {
         const registry = await deploy("MockServiceRegistry");
         const karma = await deploy("Karma");
         await (await karma.initialize()).wait();
-        const old = await fixture("0.8.30/MechMarketplace.json", registry.address, karma.address);
+        const old = await fixture("../test/fixtures/MechMarketplace_1.1.0.json", registry.address, karma.address);
         const proxy = await deploy("MechMarketplaceProxy", old.address, old.interface.encodeFunctionData("initialize", [100, 10, 20]));
         const marketplace = await contract("MechMarketplace", proxy.address);
         await (await karma.setMechMarketplaceStatuses([proxy.address], [true])).wait();
